@@ -1,0 +1,140 @@
+spring:
+  profiles:
+    active: dev
+  application:
+    name: Shoozy_Shop
+
+  datasource:
+    url: jdbc:sqlserver://localhost:1433;databaseName=Shoozy_Shop;encrypt=true;trustServerCertificate=true
+    username: sa
+    password: sa123
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 15
+      minimum-idle: 5
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      auto-commit: false
+
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.SQLServer2012Dialect
+        jdbc.time_zone: Asia/Ho_Chi_Minh
+        connection:
+          provider_disables_autocommit: true
+    naming:
+      physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: shopshoozy@gmail.com
+    password: awdlzazfwwijsngs
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 100MB
+
+  # ===== SPRING AI CONFIGURATION - OPTIMIZED FOR STABILITY =====
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: qwen2.5:3b
+          temperature: 0.3          # Giữ nguyên để response ổn định
+          timeout: 120s             # Tăng lên để tránh timeout cho câu hỏi phức tạp
+          num-ctx: 4096             # Giữ nguyên context size
+          num-predict: 150          # Giảm xuống để response nhanh hơn
+          repeat_penalty: 1.1
+          top_k: 40
+          top_p: 0.9
+          num-thread: 8             # Giữ nguyên threads
+        # Thêm connection pool settings
+        connection:
+          timeout: 60000            # 1 phút connection timeout
+          read-timeout: 60000       # 1 phút read timeout
+          write-timeout: 30000      # 30 giây write timeout
+          max-idle-connections: 5
+          keep-alive-duration: 30000
+      embedding:
+        options:
+          model: nomic-embed-text
+          timeout: 60s              # Tăng timeout cho embedding
+          num-thread: 4
+
+  vectorstore:
+    qdrant:
+      enabled: true
+      host: localhost
+      port: 6334
+      collection-name: shoozyshop
+      timeout: 30s                  # Tăng timeout
+
+  # ===== CACHE CONFIGURATION =====
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=1000,expireAfterWrite=30m
+# ===== CẤU HÌNH JWT =====
+app:
+  jwtSecret: "m8TxkCvqPz79ANLFuhGJx2YRtbQd63VoMpXzJnKReHS7c91UVy5ZWaLdEt4BYuFM"
+  jwtExpirationMs: 86400000
+  frontend-url: http://localhost:5173
+  backend-url: http://localhost:8080
+  mail:
+    from: shopshoozy@gmail.com
+    sender-name: Shoozy Shop
+
+api:
+  prefix: /api/v1
+
+# ===== LOGGING =====
+logging:
+  level:
+    org.hibernate.SQL: INFO
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    com.example.shoozy_shop.controller.ChatController: DEBUG  # Tăng lên DEBUG để debug
+    org.springframework.ai: INFO                              # Tăng lên INFO
+    org.springframework.ai.ollama: DEBUG                     # DEBUG cho Ollama
+    okhttp3: INFO                                             # Tăng lên INFO
+    okio: WARN
+    org.springframework.web.client: DEBUG                    # Debug HTTP client
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+  file:
+    name: logs/shoozy-shop.log
+
+# ===== MINIO =====
+minio:
+  url: http://localhost:9000
+  access-key: minioadmin
+  secret-key: minioadmin
+  bucket-name: product-variant-images
+  avatar-bucket-name: user-avatar
+  return-bucket-name: return-items
+
+# ===== GIAO HANG NHANH =====
+ghn:
+  token: e82a3344-7da1-11f0-873d-ee33b76c5ced
+  shopId: 197307
+  fromDistrictId: 1485
+
+vnpay:
+  tmnCode: 0LJUAUTG
+  secretKey: HRNLBOC3CF30JDM2AT5ZNXKZ1SVOO4VZ
+  payUrl: https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
+  returnUrl: http://localhost:8080/api/v1/orders/return-vnpay
