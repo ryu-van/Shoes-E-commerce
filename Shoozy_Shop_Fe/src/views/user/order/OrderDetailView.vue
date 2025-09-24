@@ -324,9 +324,27 @@
               <span class="invoice-value paid-amount">{{ formatCurrency(amountPaid) }}</span>
             </div>
 
-            <div class="invoice-row">
+            <div v-if="remainingAmount > 0" class="invoice-row">
               <span class="invoice-label">Cần trả thêm:</span>
               <span class="invoice-value remaining-amount">{{ formatCurrency(remainingAmount) }}</span>
+            </div>
+
+            <div v-if="latestRetryableTransaction && remainingAmount > 0 && order.status !== 'CANCELLED'" class="invoice-row" style="border-bottom:none; padding-top:0; justify-content: flex-end;">
+              <div class="d-flex flex-column align-items-end">
+                <div v-if="paymentTimeRemaining > 0" class="countdown-timer mb-2">
+                  <i class="fas fa-clock me-1"></i>
+                  Thời gian thanh toán còn lại: {{ formatCountdown(paymentTimeRemaining) }}
+                </div>
+                <button
+                    class="btn btn-vnpay"
+                    @click="retryTransaction(latestRetryableTransaction)"
+                    :disabled="isRetrying(latestRetryableTransaction.id)"
+                >
+                  <i class="fas fa-credit-card me-1"></i>
+                  <span v-if="isRetrying(latestRetryableTransaction.id)" class="loading-spinner"></span>
+                  Thanh toán lại 
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -349,6 +367,7 @@
 import {ref, computed, onMounted, onUnmounted} from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {getOrderById, updateCustomerInfo} from "@/service/OrderApi.js"
+import { retryVnPay } from "@/service/PaymentService.js"
 import ShowToastComponent from "@/components/ShowToastComponent.vue";
 import ListAddressModal from "@/components/ListAddressModal.vue";
 import emitter from "@/service/EvenBus.js";
@@ -359,6 +378,7 @@ const route = useRoute()
 const order = ref(null)
 const loading = ref(false)
 const error = ref('')
+const retryingMap = ref({})
 const isEditingUserInformation = ref(false);
 const originalData = ref(null);
 const showAddressModal = ref(false); // State để hiển thị modal địa chỉ
@@ -623,6 +643,86 @@ const remainingAmount = computed(() => {
   return Math.max(0, finalTotal.value - amountPaid.value)
 })
 
+// Retry helpers
+const latestRetryableTransaction = computed(() => {
+  const txs = order.value?.transactions || []
+  const methodType = order.value?.paymentMethod?.type
+  const isOnline = ['ONLINE_PAYMENT', 'VNPAY', 'MOMO', 'CREDIT_CARD'].includes(methodType)
+  if (!isOnline) return null
+  // Pick the most recent with retryable status
+  const retryables = txs.filter(t => ['FAILED', 'PENDING', 'CANCELLED'].includes(String(t.status).toUpperCase()))
+  if (!retryables.length) return null
+  // Sort by completedDate desc, fallback by id desc
+  return retryables.sort((a,b) => new Date(b.completedDate || 0) - new Date(a.completedDate || 0) || (b.id - a.id))[0]
+})
+
+const shouldShowRetry = (transaction) => {
+  if (!transaction) return false
+  const methodType = order.value?.paymentMethod?.type
+  const isOnline = ['ONLINE_PAYMENT', 'VNPAY', 'MOMO', 'CREDIT_CARD'].includes(methodType)
+  const status = (transaction.status || '').toUpperCase()
+  return isOnline && ['FAILED', 'PENDING', 'CANCELLED'].includes(status)
+}
+
+const isRetrying = (id) => {
+  return !!retryingMap.value[id]
+}
+
+// Thời gian thanh toán còn lại (24 giờ từ khi tạo đơn hàng)
+const paymentTimeRemaining = ref(0)
+const countdownInterval = ref(null)
+
+// Tính toán thời gian còn lại để thanh toán
+const calculateTimeRemaining = () => {
+  if (!order.value || !order.value.createdAt) return 0
+  
+  const orderCreatedAt = new Date(order.value.createdAt).getTime()
+  const paymentDeadline = orderCreatedAt + (15 * 60 * 1000) // 15 phút
+  const currentTime = new Date().getTime()
+  const timeRemaining = paymentDeadline - currentTime
+  
+  return Math.max(0, timeRemaining)
+}
+
+// Định dạng thời gian còn lại
+const formatCountdown = (milliseconds) => {
+  const totalSeconds = Math.floor(milliseconds / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+}
+
+// Cập nhật bộ đếm thời gian
+const updateCountdown = () => {
+  paymentTimeRemaining.value = calculateTimeRemaining()
+  
+  if (paymentTimeRemaining.value <= 0) {
+    clearInterval(countdownInterval.value)
+  }
+}
+
+const retryTransaction = async (transaction) => {
+  if (!transaction) return
+  const id = transaction.id
+  retryingMap.value[id] = true
+  try {
+    // Use transaction info (prefer transaction.orderCode if exists, else order.orderCode)
+    const code = transaction.orderCode || order.value?.orderCode
+    if (!code) return
+    const paymentUrl = await retryVnPay(code)
+    if (typeof paymentUrl === 'string' && paymentUrl.startsWith('http')) {
+      window.location.assign(paymentUrl)
+      return
+    }
+  } catch (e) {
+    console.error('Retry payment error:', e)
+  } finally {
+    retryingMap.value[id] = false
+  }
+}
+
 const fetchOrderDetail = async () => {
   loading.value = true
   error.value = ''
@@ -862,11 +962,20 @@ const handleOrderUpdate = (data) => {
 onMounted(() => {
   fetchOrderDetail()
   emitter.on('order', handleOrderUpdate);
+  
+  // Khởi tạo bộ đếm thời gian
+  updateCountdown()
+  countdownInterval.value = setInterval(updateCountdown, 1000)
 })
 
 onUnmounted(() => {
   // Gỡ bỏ listener khi component bị unmount để tránh memory leak
   emitter.off('order', handleOrderUpdate);
+  
+  // Dọn dẹp bộ đếm thời gian khi component bị hủy
+  if (countdownInterval.value) {
+    clearInterval(countdownInterval.value)
+  }
 });
 </script>
 
@@ -875,6 +984,43 @@ onUnmounted(() => {
   max-width: 1330px;
   margin: 0 auto;
   padding: 0px 20px 60px 20px;
+}
+
+.countdown-timer {
+  font-size: 0.9rem;
+  color: #2ecc71;
+  font-weight: 600;
+  background-color: rgba(46, 204, 113, 0.1);
+  padding: 5px 10px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.btn-vnpay {
+  background-color: #27ae60;
+  color: white;
+  border: none;
+  border-radius: 25px;
+  padding: 8px 16px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.btn-vnpay:hover {
+  background-color: #219653;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.btn-vnpay:disabled {
+  background-color: #95a5a6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .loading {

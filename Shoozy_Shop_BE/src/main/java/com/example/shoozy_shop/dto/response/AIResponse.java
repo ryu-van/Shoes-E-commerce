@@ -37,4 +37,8 @@ public class AIResponse {
 
     public Integer getTotalCount() { return totalCount; }
     public void setTotalCount(Integer totalCount) { this.totalCount = totalCount; }
+
+
+
 }
+

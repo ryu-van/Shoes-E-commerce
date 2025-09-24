@@ -12,14 +12,13 @@ import com.example.shoozy_shop.model.OrderDetail;
 import com.example.shoozy_shop.model.Transaction;
 import com.example.shoozy_shop.repository.CartItemRepository;
 import com.example.shoozy_shop.repository.ReturnRequestRepository;
-import com.example.shoozy_shop.service.EventQueue;
 import com.example.shoozy_shop.service.OrderService;
 import com.example.shoozy_shop.service.TransactionService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
+
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -115,5 +114,21 @@ public class OrderController {
 
         return ResponseEntity.ok(ApiResponse.success("Lấy danh sách sản phẩm có thể trả thành công", result));
     }
+
+    @GetMapping("/transaction")
+    public ResponseEntity<?> getTransactionByOrderCode(@RequestParam String orderCode) {
+        try {
+            Transaction tx = transactionService.getTransactionByCode(orderCode);
+            if (tx == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(ApiResponse.error("Transaction not found"));
+            }
+            return ResponseEntity.ok(ApiResponse.success("OK", tx));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.error("Error: " + e.getMessage()));
+        }
+    }
+
 
 }

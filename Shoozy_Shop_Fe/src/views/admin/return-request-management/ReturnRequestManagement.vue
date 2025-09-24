@@ -132,7 +132,7 @@ const viewDetail = (id) => {
       </div>
 
       <div class="col-md-3 d-flex gap-2 flex-wrap">
-        <button class="btn btn-dark flex-fill" @click="searchRequests">🔍 Tìm kiếm</button>
+        <button class="btn btn-info flex-fill" @click="searchRequests">🔍 Tìm kiếm</button>
         <button class="btn btn-secondary flex-fill" @click="clearFilter">Clear</button>
       </div>
     </div>

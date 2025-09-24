@@ -550,17 +550,24 @@ const submitForm = async () => {
   isSaving.value = true;
   try {
     if (isEditMode.value) {
+      // Chế độ cập nhật sản phẩm đã tồn tại
       await updateProduct(productId.value, productForm.value);
       showToast('Cập nhật thông tin sản phẩm thành công!', 'success');
     } else {
+      // Chế độ tạo sản phẩm mới
       const nameTaken = await isProductNameExisted(productForm.value.name);
       if (nameTaken) {
         errors.value.name = 'Tên sản phẩm đã tồn tại';
         return;
       }
+
       const productRes = await createProduct(productForm.value);
       productId.value = productRes.data.data.id;
       isProductCreated.value = true;
+
+      // QUAN TRỌNG: Chuyển sang chế độ edit sau khi tạo sản phẩm thành công
+      isEditMode.value = true;
+
       showToast('Thêm mới sản phẩm thành công! Bây giờ bạn có thể thêm biến thể.', 'success');
     }
   } catch (error) {
@@ -648,7 +655,8 @@ const generateVariantCombinations = () => {
           product_id: productId.value,
           color_id: colorId,
           size_id: sizeId,
-          price: 0,
+          costPrice: 0,
+          sellPrice: 0,
           quantity: 1
         });
       }
@@ -673,7 +681,8 @@ const createVariants = async () => {
     if (duplicates.length > 0) {
       const updatePromises = duplicates.map(({ variant }) => {
         const updateData = {
-          price: variant.price,
+          costPrice: variant.costPrice || 0,
+          sellPrice: variant.sellPrice || 0,
           quantity: variant.quantity + 1 // Cộng thêm 1 vào số lượng hiện tại
         };
         return updateProductVariant(variant.id, updateData);
@@ -942,8 +951,12 @@ onMounted(async () => {
               <td style="text-align: center; vertical-align: middle;">{{ index + 1 }}</td>
               <td style="text-align: center; vertical-align: middle;">{{ variant.size.value }}</td>
               <td style="text-align: center; vertical-align: middle;">{{ variant.quantity }}</td>
-              <td style="text-align: center; vertical-align: middle;">{{ variant.costPrice?.toLocaleString() }} đ</td>
-              <td style="text-align: center; vertical-align: middle;">{{ variant.sellPrice?.toLocaleString() }}₫</td>
+              <td style="text-align: center; vertical-align: middle;">
+                {{ (variant.costPrice || 0).toLocaleString() }} đ
+              </td>
+              <td style="text-align: center; vertical-align: middle;">
+                {{ (variant.sellPrice || 0).toLocaleString() }}₫
+              </td>
               <td style="text-align: center; vertical-align: middle;">
                 <button class="btn btn-sm btn-warning me-2" @click="editVariant(variant)" :disabled="isSaving">
                   <svg width="15" height="15" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">

@@ -169,7 +169,7 @@ onMounted(() => fetchUsers(false))
   </div>
 
   <div class="col-md-3 d-flex gap-2 flex-wrap">
-    <button class="btn btn-dark flex-fill" style="height: 38px" @click="searchUsers">🔍 Tìm kiếm</button>
+    <button class="btn btn-info flex-fill" style="height: 38px" @click="searchUsers">🔍 Tìm kiếm</button>
     <button class="btn btn-secondary flex-fill" style="height: 38px" @click="clearFilter">Clear</button>
   </div>
 

@@ -5,6 +5,7 @@ import com.example.shoozy_shop.dto.request.PromotionRequest;
 import com.example.shoozy_shop.dto.response.PromotionDetailResponse;
 import com.example.shoozy_shop.dto.response.PromotionResponse;
 import com.example.shoozy_shop.dto.response.PromotionVariantDetailResponse;
+import com.example.shoozy_shop.exception.PromotionException;
 import com.example.shoozy_shop.model.*;
 import com.example.shoozy_shop.repository.ProductVariantRepository;
 import com.example.shoozy_shop.repository.PromotionProductRepository;
@@ -27,6 +28,8 @@ public class PromotionService implements IPromotionService {
     private final PromotionRepository promotionRepository;
     private final PromotionProductRepository promotionProductRepository;
     private final ProductVariantRepository productVariantRepository;
+    private static final double MAX_PERCENT = 90.0;
+
 
     @Override
     public PromotionDetailResponse getPromotionInfoById(Long id) throws Exception {
@@ -86,6 +89,9 @@ public class PromotionService implements IPromotionService {
         if (promotionRequest.getProductPromotionRequests() == null || promotionRequest.getProductPromotionRequests().isEmpty()) {
             throw new IllegalArgumentException("Danh sách biến thể khuyến mãi không được để trống.");
         }
+        if (!checkPromotionValid(promotionRequest)) {
+            throw new IllegalArgumentException("PromotionRequest không hợp lệ.");
+        }
 
         int status = DefineStatus.defineStatus(
                 promotionRequest.getStartDate(),
@@ -125,6 +131,9 @@ public class PromotionService implements IPromotionService {
     public PromotionResponse updatePromotion(Long id, PromotionRequest promotionRequest) throws Exception {
         Promotion existingPromotion = promotionRepository.findById(id)
                 .orElseThrow(() -> new Exception("Promotion not found with ID: " + id));
+        if (!checkPromotionValid(promotionRequest)) {
+            throw new IllegalArgumentException("PromotionRequest không hợp lệ.");
+        }
 
         existingPromotion.setName(promotionRequest.getName());
         existingPromotion.setValue(promotionRequest.getValue());
@@ -232,5 +241,79 @@ public class PromotionService implements IPromotionService {
         }
 
         promotionRepository.save(promotion);
+    }
+    private Boolean checkPromotionValid(PromotionRequest promotionRequest) throws Exception {
+        // 1) kiểm tra cơ bản
+        if (promotionRequest == null) {
+            throw new PromotionException("PromotionRequest không được null.");
+        }
+        if (promotionRequest.getName() == null || promotionRequest.getName().isBlank()) {
+            throw new PromotionException("Tên khuyến mãi không được để trống.");
+        }
+        if (promotionRequest.getValue() == null) {
+            throw new PromotionException("Giá trị khuyến mãi không được null.");
+        }
+        if (promotionRequest.getValue() <= 0) {
+            throw new PromotionException("Giá trị khuyến mãi phải lớn hơn 0.");
+        }
+        if (promotionRequest.getValue() > MAX_PERCENT) {
+            throw new PromotionException("Giá trị khuyến mãi tối đa là " + MAX_PERCENT + "%.");
+        }
+
+        // 2) kiểm tra ngày bắt đầu / kết thúc
+        if (promotionRequest.getStartDate() == null) {
+            throw new PromotionException("Ngày bắt đầu là bắt buộc.");
+        }
+        if (promotionRequest.getExpirationDate() != null &&
+                promotionRequest.getExpirationDate().isBefore(promotionRequest.getStartDate())) {
+            throw new PromotionException("Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu.");
+        }
+
+        // 3) kiểm tra danh sách biến thể
+        List<ProductPromotionRequest> items = promotionRequest.getProductPromotionRequests();
+        if (items == null || items.isEmpty()) {
+            throw new PromotionException("Danh sách biến thể khuyến mãi không được để trống.");
+        }
+
+        // 4) kiểm tra id biến thể trùng lặp và customValue
+        Set<Long> allIds = new HashSet<>();
+        Set<Long> dupes = new HashSet<>();
+        for (ProductPromotionRequest item : items) {
+            if (item == null) continue;
+
+            Double custom = item.getCustomValue();
+            if (custom != null) {
+                if (custom <= 0) {
+                    throw new PromotionException("Custom value (nếu có) phải lớn hơn 0.");
+                }
+                if (custom > MAX_PERCENT) {
+                    throw new PromotionException("Custom value tối đa là " + MAX_PERCENT + "%.");
+                }
+            }
+
+            if (item.getProductVariantIds() == null) continue;
+            for (Long id : item.getProductVariantIds()) {
+                if (id == null) continue;
+                if (!allIds.add(id)) dupes.add(id);
+            }
+        }
+
+        if (!dupes.isEmpty()) {
+            throw new PromotionException("Trùng lặp productVariantIds: " + dupes);
+        }
+        if (allIds.isEmpty()) {
+            throw new PromotionException("Phải chọn ít nhất 1 biến thể sản phẩm.");
+        }
+
+        // 5) kiểm tra biến thể có tồn tại
+        List<ProductVariant> found = productVariantRepository.findAllById(allIds);
+        if (found.size() != allIds.size()) {
+            Set<Long> foundIds = found.stream().map(ProductVariant::getId).collect(Collectors.toSet());
+            Set<Long> missing = new HashSet<>(allIds);
+            missing.removeAll(foundIds);
+            throw new Exception("Không tìm thấy biến thể sản phẩm với ID: " + missing);
+        }
+
+        return true;
     }
 }

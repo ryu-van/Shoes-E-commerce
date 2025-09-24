@@ -27,12 +27,12 @@ public class CartController {
     }
 
     // Xóa cart item theo cartId và cartItemId
-    @DeleteMapping("/{cartId}/items/{cartItemId}")
-    public ResponseEntity<?> deleteCartItem(@PathVariable Long cartId,
-                                            @PathVariable Long cartItemId) throws Exception {
-        cartService.deleteItemCart(cartItemId, cartId);
-        return ResponseEntity.ok(ApiResponse.success("Cart item deleted successfully", null));
-    }
+//    @DeleteMapping("/{cartId}/items/{cartItemId}")
+//    public ResponseEntity<?> deleteCartItem(@PathVariable Long cartId,
+//                                            @PathVariable Long cartItemId) throws Exception {
+//        cartService.deleteItemCart(cartItemId, cartId);
+//        return ResponseEntity.ok(ApiResponse.success("Cart item deleted successfully", null));
+//    }
 
     // Đổi số lượng cart item theo cartItemId
     @PutMapping("/items/{cartItemId}/quantity")

@@ -25,8 +25,9 @@
         <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
         {{ loading ? 'Đang xử lý...' : 'Thanh toán lại với VNPay' }}
       </button>
-      <button class="btn btn-outline-secondary px-4 py-2 fw-bold" @click="goOrders">
-        <i class="bi bi-receipt me-2"></i>Xem đơn hàng
+      <button class="btn btn-outline-secondary px-4 py-2 fw-bold" @click="goOrderDetail" :disabled="viewLoading">
+        <span v-if="viewLoading" class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+        <i v-else class="bi bi-receipt me-2"></i>Xem chi tiết đơn hàng
       </button>
       <button class="btn btn-light px-4 py-2 fw-bold" @click="goHome">
         <i class="bi bi-house me-2"></i>Về trang chủ
@@ -39,6 +40,7 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { retryVnPay } from '@/service/PaymentService' // Import API retryVnPay
+import { getTransactionByOrderCode } from '@/service/OrderApi'
 
 const route = useRoute()
 const router = useRouter()
@@ -46,6 +48,7 @@ const router = useRouter()
 const orderCode = computed(() => route.query.orderCode || '')
 const code = computed(() => route.query.code || '')
 const loading = ref(false)
+const viewLoading = ref(false)
 
 const displayMsg = computed(() => {
   if (route.query.msg) return String(route.query.msg)
@@ -57,6 +60,29 @@ const displayMsg = computed(() => {
 
 const goHome = () => router.push({ path: '/' })
 const goOrders = () => router.push({ path: '/orders' })
+
+const goOrderDetail = async () => {
+  if (!orderCode.value) {
+    goOrders()
+    return
+  }
+  try {
+    viewLoading.value = true
+    const resp = await getTransactionByOrderCode(orderCode.value)
+    const tx = resp?.data?.data || resp?.data
+    const orderId = tx?.orderId || tx?.order?.id
+    if (orderId) {
+      router.push({ path: `/order-detail/${orderId}` })
+      return
+    }
+    goOrders()
+  } catch (e) {
+    console.error('Fetch transaction by orderCode failed:', e)
+    goOrders()
+  } finally {
+    viewLoading.value = false
+  }
+}
 
 const retry = async () => {
   if (!orderCode.value) {

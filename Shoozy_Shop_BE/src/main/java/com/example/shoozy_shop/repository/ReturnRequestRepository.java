@@ -14,14 +14,16 @@ import com.example.shoozy_shop.model.ReturnRequest;
 
 @Repository
 public interface ReturnRequestRepository extends JpaRepository<ReturnRequest, Long> {
+
   List<ReturnRequest> findByUserId(Long userId);
 
+  // (có thể bỏ nếu không dùng nữa — đã có bản "active" ở ReturnItemRepo)
   @Query("SELECT COALESCE(SUM(r.quantity), 0) FROM ReturnItem r WHERE r.orderDetail.id = :orderDetailId")
   int sumReturnedQuantityByOrderDetailId(@Param("orderDetailId") Long orderDetailId);
 
   Page<ReturnRequest> findByStatus(ReturnStatus status, Pageable pageable);
 
-  // ReturnRequestRepository.java
+  // 🔍 Search theo user (đã OK)
   @Query("""
           select distinct rr
           from ReturnRequest rr
@@ -38,9 +40,20 @@ public interface ReturnRequestRepository extends JpaRepository<ReturnRequest, Lo
             )
           order by rr.updatedAt desc, rr.createdAt desc
       """)
-  List<ReturnRequest> searchByUserNoPage(
-      @Param("userId") Long userId,
+  List<ReturnRequest> searchByUserNoPage(@Param("userId") Long userId,
       @Param("q") String q,
       @Param("statusEnum") ReturnStatus statusEnum);
 
+  // ✅ Chi tiết cho admin/user: fetch-join đầy đủ để convert DTO không bị N+1
+  @Query("""
+          select rr from ReturnRequest rr
+           join fetch rr.order o
+           left join fetch rr.returnItems ri
+           left join fetch ri.images imgs
+           left join fetch ri.orderDetail od
+           left join fetch od.productVariant pv
+           left join fetch pv.product p
+          where rr.id = :id
+      """)
+  java.util.Optional<ReturnRequest> findDetailById(@Param("id") Long id);
 }

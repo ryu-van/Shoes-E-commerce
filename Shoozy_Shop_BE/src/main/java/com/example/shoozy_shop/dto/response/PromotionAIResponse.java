@@ -16,7 +16,7 @@ public class PromotionAIResponse {
     public PromotionAIResponse() {}
 
     public PromotionAIResponse(String name, String code, Double value, String productName,
-                        LocalDateTime startDate, LocalDateTime expirationDate) {
+                               LocalDateTime startDate, LocalDateTime expirationDate) {
         this.name = name;
         this.code = code;
         this.value = value;

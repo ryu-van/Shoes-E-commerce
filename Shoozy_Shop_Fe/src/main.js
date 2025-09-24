@@ -5,7 +5,7 @@ import 'bootstrap/dist/css/bootstrap.css'
 import * as bootstrap from 'bootstrap'
 import 'bootstrap/dist/js/bootstrap.bundle.js'
 import router from './router'
-
+    
 const app = createApp(App)
 
 const pinia = createPinia()

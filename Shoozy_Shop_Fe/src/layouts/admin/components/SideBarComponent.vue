@@ -14,9 +14,6 @@ const normalizedRole = computed(() => (currentRole.value || '').trim().toLowerCa
 const isAdmin = computed(() => normalizedRole.value === 'admin')
 const isStaff = computed(() => normalizedRole.value === 'staff')
 
-console.log("Role from store (computed):", currentRole.value)
-
-
 function toggleUserMenu() {
   showUserMenu.value = !showUserMenu.value
 }
@@ -140,6 +137,24 @@ function setActiveItem(item) {
             </li>
           </ul>
         </li>
+        <!-- bán hàng tại quầy -->
+        <li class="nav-item">
+          <router-link to="/admin/selloff" class="nav-link d-flex align-items-center"
+                       :class="{ active: activeItem === 'taiquay' }" @click="setActiveItem('taiquay')">
+                        <span class="sidebar-icon">
+                              <svg xmlns="http://www.w3.org/2000/svg"
+                                   width="20" height="20" fill="none"
+                                   stroke="currentColor" stroke-width="2"
+                                   viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13l-1.35 2.7a1 1 0 00.9 1.5h12.9m-13.45-4.2L5.4 5M16 17a2 2 0 11.001 3.999A2 2 0 0116 17zm-8 0a2 2 0 11.001 3.999A2 2 0 018 17z"/>
+      </svg>
+
+                        </span>
+            <span class="sidebar-text">Bán Hàng Tại Quầy</span>
+          </router-link>
+        </li>
+
         <li class="nav-item">
           <router-link to="/admin/orders" class="nav-link d-flex align-items-center"
                        :class="{ active: activeItem === 'donhang' }" @click.native="setActiveItem('donhang')">
@@ -243,25 +258,6 @@ function setActiveItem(item) {
     </li>
   </ul>
 </li>
-
-        <!-- bán hàng tại quầy -->
-        <li class="nav-item">
-          <router-link to="/admin/selloff" class="nav-link d-flex align-items-center"
-                       :class="{ active: activeItem === 'taiquay' }" @click="setActiveItem('taiquay')">
-                        <span class="sidebar-icon">
-                              <svg xmlns="http://www.w3.org/2000/svg" 
-           width="20" height="20" fill="none" 
-           stroke="currentColor" stroke-width="2" 
-           viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round"
-          d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13l-1.35 2.7a1 1 0 00.9 1.5h12.9m-13.45-4.2L5.4 5M16 17a2 2 0 11.001 3.999A2 2 0 0116 17zm-8 0a2 2 0 11.001 3.999A2 2 0 018 17z"/>
-      </svg>
-
-                        </span>
-            <span class="sidebar-text">Bán Hàng Tại Quầy</span>
-          </router-link>
-        </li>
-        
         <!-- Divider before Back to Client button -->
         <li role="separator" class="dropdown-divider my-3 border-gray-700"></li>
 

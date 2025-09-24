@@ -1,15 +1,12 @@
 <script setup>
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
-import {getAllOrders, deleteOrderById} from "@/service/OrderApi.js";
+import {getAllOrders, deleteOrderById, sendOrderCancelledByShopEmail} from "@/service/OrderApi.js";
 import ShowToastComponent from "@/components/ShowToastComponent.vue";
 import emitter from '@/service/EvenBus.js';
 import {
   connectWebSocket,
-  disconnectWebSocket,
   addMessageListener,
   removeMessageListener,
-  addCouponListener,
-  removeCouponListener
 } from '@/service/Websocket'
 
 const searchQuery = ref('')
@@ -100,7 +97,7 @@ const fetchOrders = async () => {
     orders.value = response.data.data.map(order => ({
       id: order.id,
       code: order.orderCode,
-      totalAmount: formatCurrency(order.finalPrice),
+      totalAmount: formatCurrency(order.totalMoney),
       customerName: order.fullname || '',
       createdAt: formatDate(order.createdAt),
       rawCreatedAt: order.updatedAt, // Giữ nguyên ngày gốc để filter
@@ -117,8 +114,6 @@ const fetchOrders = async () => {
     }))
         // Sắp xếp theo thời gian tạo mới nhất lên đầu
         .sort((a, b) => new Date(b.rawCreatedAt) - new Date(a.rawCreatedAt))
-
-    console.log('Orders fetched successfully:', orders.value)
   } catch (err) {
     error.value = 'Không thể tải dữ liệu đơn hàng'
     console.error('Error fetching orders:', err)
@@ -134,37 +129,6 @@ const handleOrderUpdate = (data) => {
   fetchOrders();
 }
 
-// Event handler cho WebSocket coupon messages
-const handleCouponUpdate = (data) => {
-  console.log('Received coupon update via WebSocket:', data);
-  
-  // Xử lý cập nhật coupon quantity khi có đơn hàng sử dụng coupon
-  if (data?.type === 'coupon' && data?.action === 'DECREMENT') {
-    const { couponId, quantity, status, code } = data.payload || {}
-    
-    // Tìm đơn hàng có sử dụng coupon này và cập nhật thông tin
-    orders.value.forEach(order => {
-      if (order.coupon && (order.coupon.id === couponId || order.coupon.code === code)) {
-        // Cập nhật thông tin coupon trong đơn hàng
-        if (order.coupon) {
-          if (typeof quantity !== 'undefined') order.coupon.quantity = quantity
-          if (typeof status !== 'undefined') order.coupon.status = status
-        }
-      }
-    })
-    
-    // Hiển thị thông báo cập nhật
-    if (code) {
-      showToast(`Cập nhật mã giảm giá ${code}: còn ${quantity} lượt sử dụng`, 'success')
-    }
-  }
-  
-  // Nếu có đơn hàng mới sử dụng coupon, refresh danh sách
-  if (data?.type === 'order' && data?.action === 'ORDER_CREATED' && data?.payload?.coupon) {
-    console.log('New order with coupon created, refreshing orders list')
-    fetchOrders()
-  }
-}
 
 // Computed properties
 const filteredOrders = computed(() => {
@@ -498,6 +462,15 @@ const confirmCancelOrder = async () => {
   isCancellingOrder.value = true;
   try {
     await deleteOrderById(cancelOrderId.value);
+    
+    // Gửi email thông báo hủy đơn hàng bởi shop
+    try {
+      await sendOrderCancelledByShopEmail(cancelOrderId.value, cancelDescription.value || 'Hủy đơn hàng theo yêu cầu');
+    } catch (emailError) {
+      console.warn("Không thể gửi email thông báo hủy đơn hàng:", emailError);
+      // Không hiển thị lỗi cho admin vì đơn hàng đã được hủy thành công
+    }
+    
     showToast("Hủy đơn hàng thành công!", "success");
     fetchOrders();
     hideCancelConfirmModal();
@@ -521,12 +494,9 @@ const hideCancelConfirmModal = () => {
 // Lifecycle
 onMounted(() => {
   fetchOrders();
-  
   // Kết nối WebSocket và đăng ký listeners
   connectWebSocket();
   addMessageListener(handleOrderUpdate);
-  addCouponListener(handleCouponUpdate);
-  
   // Đăng ký lắng nghe sự kiện 'order' từ event bus
   emitter.on('order', handleOrderUpdate);
 });
@@ -534,9 +504,7 @@ onMounted(() => {
 onUnmounted(() => {
   // Gỡ bỏ listeners khi component bị unmount để tránh memory leak
   removeMessageListener(handleOrderUpdate);
-  removeCouponListener(handleCouponUpdate);
   emitter.off('order', handleOrderUpdate);
-  
   // Không disconnect WebSocket vì có thể được sử dụng bởi các component khác
   // disconnectWebSocket();
 });
@@ -730,9 +698,6 @@ onUnmounted(() => {
               <span class="badge bg-info text-white" style="font-size: 12px; padding: 4px 8px; border-radius: 12px">
                 {{ order.coupon.code || order.coupon.name }}
               </span>
-              <div v-if="order.coupon.quantity !== undefined" class="small text-muted mt-1">
-                Còn: {{ order.coupon.quantity }}
-              </div>
             </div>
             <span v-else class="text-muted small">Không có</span>
           </td>

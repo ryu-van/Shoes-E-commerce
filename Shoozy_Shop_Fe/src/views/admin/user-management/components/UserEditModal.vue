@@ -4,6 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import ShowToastComponent from "@/components/ShowToastComponent.vue"
 import { getUserById, updateUserMultipart } from '@/service/UserApis'
 
+// ⬇️ thêm: modal chọn địa chỉ và API lấy địa chỉ mặc định
+import ListAddressModal from '@/components/ListAddressModal.vue'
+import { getSelectedAddress } from '@/service/AddressApi.js'
+
 const route = useRoute()
 const router = useRouter()
 
@@ -52,6 +56,54 @@ const PHONE_REGEX = /^0\d{9}$/ // đồng bộ với BE
 const digits10 = (v='') => String(v).replace(/\D/g,'').slice(0,10)
 const normEmail = (v='') => String(v).trim().toLowerCase()
 
+// ===== Địa chỉ (UI & build line) =====
+const showAddressModal = ref(false)
+const ADDRESS_MAX = 255
+const addressCount = ref(0)
+
+// các mảnh địa lý (nếu modal trả về)
+const selectedProvinceId = ref(null)
+const selectedDistrictId = ref(null)
+const selectedWardCode   = ref(null)
+const addressDetail      = ref('')
+
+function buildAddressLine () {
+  return String(localUser.value.address || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, ADDRESS_MAX)
+}
+
+function handleSaveAddress (payload) {
+  // payload có thể là addressObj hoặc { data: { ... } } tuỳ modal của bạn
+  const a = payload?.data || payload
+  if (!a) { showAddressModal.value = false; return }
+
+  const line = a.line ||
+    [a.addressDetail, a.wardName, a.districtName, a.provinceName]
+      .filter(Boolean).join(', ')
+
+  localUser.value.address = line || ''
+  addressDetail.value = a.addressDetail || ''
+  selectedProvinceId.value = a.provinceId ?? a.ProvinceID ?? null
+  selectedDistrictId.value = a.districtId ?? a.DistrictID ?? null
+  selectedWardCode.value   = a.wardCode   ?? a.WardCode   ?? null
+
+  addressCount.value = (localUser.value.address || '').length
+  delete fieldErrors.address
+  showAddressModal.value = false
+}
+
+function handleClearAddress () {
+  localUser.value.address = ''
+  addressDetail.value = ''
+  selectedProvinceId.value = null
+  selectedDistrictId.value = null
+  selectedWardCode.value = null
+  addressCount.value = 0
+}
+
 // ===== Load user =====
 async function fetchUser() {
   loading.value = true
@@ -74,15 +126,33 @@ async function fetchUser() {
       avatar: u.avatarUrl || u.avatar || null,
     }
 
-    // LƯU GIÁ TRỊ GỐC để so sánh khi submit
     original.value.email       = normEmail(localUser.value.email)
     original.value.phoneNumber = digits10(localUser.value.phoneNumber)
-
     avatarPreview.value = localUser.value.avatar
+
+    // ➜ Thử lấy địa chỉ mặc định từ API (nếu có)
+    try {
+      const sel = await getSelectedAddress(localUser.value.id)
+      const a = sel?.data?.data
+      if (a) {
+        const line = a.line ||
+          [a.addressDetail, a.wardName, a.districtName, a.provinceName].filter(Boolean).join(', ')
+        if (line) {
+          localUser.value.address = line
+          addressDetail.value = a.addressDetail || ''
+          selectedProvinceId.value = a.provinceId ?? a.ProvinceID ?? null
+          selectedDistrictId.value = a.districtId ?? a.DistrictID ?? null
+          selectedWardCode.value   = a.wardCode   ?? a.WardCode   ?? null
+          addressCount.value = line.length
+        }
+      }
+    } catch (e) {
+      // không chặn UI nếu không có địa chỉ
+      console.debug('No selected address:', e?.response?.status || e?.message)
+    }
   } catch (e) {
     console.error(e)
     showToast('Không tìm thấy người dùng.', 'error')
-    // fallback nếu đi thẳng vào trang sửa bằng URL
     router.push('/admin/users/customer')
   } finally {
     loading.value = false
@@ -100,12 +170,11 @@ function clearNewAvatar() {
   avatarPreview.value = localUser.value.avatar || null
 }
 
-// ===== Go back (rollback về đúng màn trước) =====
+// ===== Go back =====
 function goBackToList() {
   if (window.history.length > 1) {
     router.back()
   } else {
-    // fallback nếu mở trang sửa trực tiếp bằng URL: về danh sách theo role hiện tại
     const fallback = (localUser.value.roleName === 'Staff')
       ? '/admin/users/staff'
       : '/admin/users/customer'
@@ -145,12 +214,17 @@ function validate() {
     valid = false
   }
 
-  // Address
-  if (!localUser.value.address?.trim()) {
-    fieldErrors.address = 'Vui lòng nhập địa chỉ'
+  // Address (readonly – phải chọn qua modal)
+  localUser.value.address = buildAddressLine()
+  addressCount.value = localUser.value.address.length
+  if (!localUser.value.address) {
+    fieldErrors.address = 'Vui lòng chọn địa chỉ'
     valid = false
-  } else if (localUser.value.address.trim().length > 300) {
-    fieldErrors.address = 'Địa chỉ không được vượt quá 300 ký tự'
+  } else if (localUser.value.address.length < 6) {
+    fieldErrors.address = 'Địa chỉ quá ngắn (tối thiểu 6 ký tự)'
+    valid = false
+  } else if (localUser.value.address.length > ADDRESS_MAX) {
+    fieldErrors.address = `Địa chỉ không được vượt quá ${ADDRESS_MAX} ký tự`
     valid = false
   }
 
@@ -178,7 +252,7 @@ function validate() {
   return valid
 }
 
-// ===== Submit (LUÔN multipart) =====
+// ===== Submit (multipart) =====
 const lastSubmitChanged = { email: false, phone: false }
 
 async function submit() {
@@ -202,13 +276,11 @@ async function submit() {
     fd.append('isActive', String(!!localUser.value.isActive))
     if (avatarFile.value instanceof File) fd.append('avatar', avatarFile.value)
 
-    // đánh dấu đã đổi để tiện xử lý 409 nếu cần
     lastSubmitChanged.email = (nowEmail !== original.value.email)
     lastSubmitChanged.phone = (nowPhone !== original.value.phoneNumber)
 
     await updateUserMultipart(localUser.value.id, fd)
 
-    // cập nhật lại gốc
     original.value.email       = nowEmail
     original.value.phoneNumber = nowPhone
 
@@ -229,7 +301,6 @@ function handleUpdateError(err) {
   const msg  = data?.message || data?.error || data?.detail || ''
   const code = data?.code || data?.data?.code || data?.errorCode || ''
 
-  // 409: trùng
   if (res?.status === 409) {
     if (code === 'PHONE_EXISTS' || /(phone|số\s*điện\s*thoại)/i.test(msg)) {
       delete fieldErrors.email
@@ -251,7 +322,6 @@ function handleUpdateError(err) {
     }
   }
 
-  // mảng lỗi field
   const list = data?.errors || data?.violations || data?.fieldErrors
   if (Array.isArray(list) && list.length) {
     Object.keys(fieldErrors).forEach(k => delete fieldErrors[k])
@@ -269,7 +339,6 @@ function handleUpdateError(err) {
     return
   }
 
-  // object lỗi field
   const possibleMap = data?.fieldErrors || data?.errors || null
   const formKeys = new Set(['fullname','email','phoneNumber','address','dateOfBirth','roleName','isActive','gender'])
   if (possibleMap && typeof possibleMap === 'object' && !Array.isArray(possibleMap)) {
@@ -348,20 +417,41 @@ function handleUpdateError(err) {
               </div>
             </div>
 
-            <div class="row mb-3">
-              <div class="col-md-6 mb-3 mb-md-0">
+            <div class="mb-3">
+              
                 <label class="form-label">Email</label>
                 <input v-model="localUser.email" type="email" class="form-control"
                        :class="{ 'is-invalid': fieldErrors.email }"/>
                 <div v-if="fieldErrors.email" class="invalid-feedback">{{ fieldErrors.email }}</div>
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Địa chỉ</label>
-                <input v-model="localUser.address" type="text" class="form-control"
-                       :class="{ 'is-invalid': fieldErrors.address }"/>
-                <div v-if="fieldErrors.address" class="invalid-feedback">{{ fieldErrors.address }}</div>
-              </div>
+             
+
+              
             </div>
+            <!-- ⬇️ THAY ĐỔI: Địa chỉ chọn qua modal -->
+              <div class="row mb-3">
+                <label class="form-label d-flex justify-content-between align-items-center">
+                  <span>Địa chỉ</span>
+                  <small class="text-muted">{{ addressCount }}/{{ ADDRESS_MAX }} ký tự</small>
+                </label>
+                <div class="input-group">
+                  <input
+                    type="text"
+                    class="form-control"
+                    :value="localUser.address"
+                    readonly
+                    placeholder="Chưa chọn địa chỉ"
+                    :class="{ 'is-invalid': fieldErrors.address }"
+                  />
+                  <button type="button" class="btn btn-primary" @click="showAddressModal = true">
+                    Danh sách địa chỉ
+                  </button>
+                  <button type="button" class="btn btn-secondary" @click="handleClearAddress" :disabled="!localUser.address">
+                    Xoá
+                  </button>
+                </div>
+                <div v-if="fieldErrors.address" class="invalid-feedback d-block">{{ fieldErrors.address }}</div>
+              </div>
+              <!-- ⬆️ END địa chỉ -->
 
             <div class="row mb-3">
               <div class="col-md-6">
@@ -411,6 +501,15 @@ function handleUpdateError(err) {
         </div>
       </div>
     </div>
+
+    <!-- Modal chọn địa chỉ -->
+    <ListAddressModal
+      v-if="showAddressModal"
+      :userId="localUser.id"       
+      mode="picker"            
+      @close="showAddressModal = false"
+      @save="handleSaveAddress"
+    />
 
     <ShowToastComponent ref="toastRef" />
   </div>

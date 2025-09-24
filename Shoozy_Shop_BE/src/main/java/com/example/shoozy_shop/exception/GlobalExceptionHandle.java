@@ -162,4 +162,14 @@ public class GlobalExceptionHandle extends ResponseEntityExceptionHandler {
         return ResponseEntity.status(409).body(ApiResponse.error(ex.getMessage()));
     }
 
+    @ExceptionHandler(OutOfStockException.class)
+    public ResponseEntity<Map<String, Object>> handle(OutOfStockException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", "OUT_OF_STOCK",
+                "message", "Sản phẩm không đủ tồn kho",
+                "cartQuantity", ex.getCartQuantity(),
+                "allowAdd", ex.getAllowAdd()
+        ));
+    }
+
 }

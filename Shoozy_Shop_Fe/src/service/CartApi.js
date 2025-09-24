@@ -8,10 +8,10 @@ export default {
     return apiClient.post(`${BASE_URL}/add`, { userId, productVariantId, quantity });
   },
 
-  // Xóa cart item theo cartId và cartItemId
-  deleteCartItem(cartId, cartItemId) {
-    return apiClient.delete(`${BASE_URL}/${cartId}/items/${cartItemId}`);
-  },
+  // // Xóa cart item theo cartId và cartItemId
+  // deleteCartItem(cartId, cartItemId) {
+  //   return apiClient.delete(`${BASE_URL}/${cartId}/items/${cartItemId}`);
+  // },
 
   // Đổi số lượng cart item
   changeCartItemQuantity(cartItemId, quantity) {

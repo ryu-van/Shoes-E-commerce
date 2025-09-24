@@ -168,29 +168,111 @@ const formatPrice = (price) => {
   return price.toLocaleString('vi-VN') + 'đ'
 }
 
+const getProductDiscount = (product) => {
+  // Lấy discount từ active_promotions
+  if (product.active_promotions && product.active_promotions.length > 0) {
+    const maxDiscount = Math.max(...product.active_promotions.map(p => p.value || 0))
+    return maxDiscount > 0 ? maxDiscount : null
+  }
+  return null
+}
+
 const getProductPrice = (product) => {
-  if (product.variants?.length > 0) {
+  let originalPrice = null;
+
+  // Lấy giá gốc từ minPrice/maxPrice hoặc variants
+  if (product.minPrice && product.maxPrice) {
+    originalPrice = product.minPrice === product.maxPrice ?
+        product.minPrice :
+        { min: product.minPrice, max: product.maxPrice };
+  } else if (product.variants?.length > 0) {
     const validPrices = product.variants
-        .map(v => v.sellPrice || 0)
+        .map(v => v.sellPrice || v.price || 0)
         .filter(price => price > 0);
 
     if (validPrices.length > 0) {
-      const min = Math.min(...validPrices)
-      const max = Math.max(...validPrices)
-      return min === max ? formatPrice(min) : `${formatPrice(min)} - ${formatPrice(max)}`
+      const min = Math.min(...validPrices);
+      const max = Math.max(...validPrices);
+      originalPrice = min === max ? min : { min, max };
+    }
+  } else if (product.price && product.price > 0) {
+    originalPrice = product.price;
+  }
+
+  if (!originalPrice) {
+    return 'Liên hệ';
+  }
+
+  // Lấy discount từ active_promotions
+  const discountPercentage = getProductDiscount(product);
+
+  // Tính giá sau discount (nếu có)
+  if (discountPercentage && discountPercentage > 0) {
+    if (typeof originalPrice === 'object') {
+      // Trường hợp có range giá
+      const discountedMin = originalPrice.min * (1 - discountPercentage / 100);
+      const discountedMax = originalPrice.max * (1 - discountPercentage / 100);
+
+      if (discountedMin === discountedMax) {
+        return formatPrice(discountedMin);
+      } else {
+        return `${formatPrice(discountedMin)} - ${formatPrice(discountedMax)}`;
+      }
+    } else {
+      // Trường hợp giá đơn
+      const discountedPrice = originalPrice * (1 - discountPercentage / 100);
+      return formatPrice(discountedPrice);
     }
   }
 
-  if (product.minPrice && product.minPrice > 0) {
-    return formatPrice(product.minPrice)
+  // Không có discount - trả về giá gốc
+  if (typeof originalPrice === 'object') {
+    return `${formatPrice(originalPrice.min)} - ${formatPrice(originalPrice.max)}`;
+  } else {
+    return formatPrice(originalPrice);
+  }
+};
+
+const getOriginalPrice = (product) => {
+  const discountPercentage = getProductDiscount(product);
+
+  // Chỉ hiển thị giá gốc khi có discount
+  if (!discountPercentage || discountPercentage <= 0) {
+    return null;
   }
 
-  if (product.price && product.price > 0) {
-    return formatPrice(product.price)
+  let originalPrice = null;
+
+  // Lấy giá gốc từ minPrice/maxPrice hoặc variants
+  if (product.minPrice && product.maxPrice) {
+    originalPrice = product.minPrice === product.maxPrice ?
+        product.minPrice :
+        { min: product.minPrice, max: product.maxPrice };
+  } else if (product.variants?.length > 0) {
+    const validPrices = product.variants
+        .map(v => v.sellPrice || v.price || 0)
+        .filter(price => price > 0);
+
+    if (validPrices.length > 0) {
+      const min = Math.min(...validPrices);
+      const max = Math.max(...validPrices);
+      originalPrice = min === max ? min : { min, max };
+    }
+  } else if (product.price && product.price > 0) {
+    originalPrice = product.price;
   }
 
-  return 'Liên hệ'
-}
+  if (!originalPrice) {
+    return null;
+  }
+
+  // Format giá gốc
+  if (typeof originalPrice === 'object') {
+    return `${formatPrice(originalPrice.min)} - ${formatPrice(originalPrice.max)}`;
+  } else {
+    return formatPrice(originalPrice);
+  }
+};
 
 const handleImageError = (e) => {
   e.target.src = '/404.jpg'
@@ -747,10 +829,10 @@ onUnmounted(() => {
                   <span class="rating-text">{{ (Number(product.averageRating).toFixed(1) || 0) }}/5</span>
                 </div>
                 <div class="product-price">
-                  {{ getProductPrice(product) }}
-                  <span v-if="product.originalPrice" class="old-price">
-                    {{ formatPrice(product.originalPrice) }}
-                  </span>
+                    {{ getProductPrice(product) }}
+                    <span v-if="getOriginalPrice(product)" class="old-price">
+                      {{ getOriginalPrice(product) }}
+                     </span>
                 </div>
               </div>
             </div>

@@ -24,7 +24,7 @@ export const connectWebSocket = () => {
       // Kênh refresh tổng
       stompClient.subscribe('/topic/refresh', (message) => {
         const data = JSON.parse(message.body)
-        console.log('🔄 [WS] Received refresh message:', data)
+        console.log('Received refresh message:', data)
         refreshListeners.forEach((cb) => cb(data))
       })
 
@@ -41,9 +41,7 @@ export const connectWebSocket = () => {
       // Kênh thông báo đơn hàng có sử dụng coupon
       stompClient.subscribe('/topic/admin/orders', (message) => {
         const data = JSON.parse(message.body)
-        console.log('📦 [WS] Received order update from /topic/admin/orders:', data)
         orderListeners.forEach((cb) => {
-          console.log('📦 [WS] Calling order listener:', cb)
           cb(data)
         })
       })
@@ -51,9 +49,7 @@ export const connectWebSocket = () => {
       // Kênh trạng thái coupon riêng
       stompClient.subscribe('/topic/coupon/status', (message) => {
         const data = JSON.parse(message.body)
-        console.log('📊 [WS] Received coupon status from /topic/coupon/status:', data)
         couponListeners.forEach((cb) => {
-          console.log('📊 [WS] Calling coupon status listener:', cb)
           cb(data)
         })
       })
@@ -99,23 +95,17 @@ export const removeMessageListener = (callback) => {
   if (index !== -1) refreshListeners.splice(index, 1)
 }
 
-// Đăng ký lắng nghe cập nhật coupon
 export const addCouponListener = (callback) => {
-  console.log('🎫 [WS] Adding coupon listener:', callback)
   couponListeners.push(callback)
-  console.log('🎫 [WS] Total coupon listeners:', couponListeners.length)
 }
 
 export const removeCouponListener = (callback) => {
-  console.log('🎫 [WS] Removing coupon listener:', callback)
   const index = couponListeners.indexOf(callback)
   if (index !== -1) {
     couponListeners.splice(index, 1)
-    console.log('🎫 [WS] Removed coupon listener, remaining:', couponListeners.length)
   }
 }
 
-// Đăng ký lắng nghe đơn hàng có coupon
 export const addOrderListener = (callback) => {
   orderListeners.push(callback)
 }
@@ -125,11 +115,6 @@ export const removeOrderListener = (callback) => {
   if (index !== -1) orderListeners.splice(index, 1)
 }
 
-/**
- * Subscribe events của coupon theo id hoặc code.
- * Server nên broadcast tới: /topic/coupons/{couponId} (hoặc {code})
- * Trả về handle subscription (gọi .unsubscribe() để huỷ).
- */
 export const subscribeCouponEvents = (couponIdOrCode, callback) => {
   if (!connected || !stompClient) {
     console.warn('[WS] Not connected yet, cannot subscribe coupon channel.')
@@ -146,17 +131,32 @@ export const subscribeCouponEvents = (couponIdOrCode, callback) => {
   })
 }
 
-// Kiểm tra trạng thái kết nối
-export const isConnected = () => connected
+export const subscribeCouponByCode = (couponCode, callback) => {
+  if (!connected || !stompClient || !couponCode) {
+    console.warn('[WS] Cannot subscribe - not connected or no coupon code')
+    return null
+  }
 
-// Gửi message (nếu cần)
-export const sendMessage = (destination, message) => {
-  if (connected && stompClient) {
-    stompClient.publish({
-      destination: destination,
-      body: JSON.stringify(message)
+  const destination = `/topic/coupons/${couponCode}`
+  console.log(`[WS] Subscribing to coupon: ${destination}`)
+
+  try {
+    return stompClient.subscribe(destination, (message) => {
+      try {
+        const data = JSON.parse(message.body)
+        console.log(`[WS] Coupon ${couponCode} event:`, data)
+        callback(data)
+      } catch (e) {
+        console.error('[WS] Parse coupon event error:', e)
+      }
     })
-  } else {
-    console.warn('[WS] Not connected, cannot send message')
+  } catch (error) {
+    console.error('[WS] Subscribe error:', error)
+    return null
   }
 }
+
+export const isConnected = () => connected
+
+// Export getter function for stompClient
+export const getStompClient = () => stompClient

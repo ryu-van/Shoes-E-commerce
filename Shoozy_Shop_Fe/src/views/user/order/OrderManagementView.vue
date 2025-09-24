@@ -142,11 +142,11 @@
                     v-if="canShowRepayButton(order)"
                     class="btn btn-success"
                     @click="handleRepay(order)"
-                    :disabled="updatingOrders.includes(order.id)"
+                    :disabled="updatingOrders.includes(order.id) || (order.status === 'PENDING' && !canRepay(order.createdAt))"
                 >
                   <i class="fas fa-credit-card me-1"></i>
-                  Thanh toán lại với VNPay
-                  <small v-if="order.status === 'PENDING'" class="d-block">{{ getRepayTimeLeft(order.createdAt) }}</small>
+                  {{ order.status === 'PENDING' && !canRepay(order.createdAt) ? 'Đã hết hạn thanh toán' : 'Thanh toán lại với VNPay' }}
+                  <small v-if="order.status === 'PENDING' && canRepay(order.createdAt)" class="d-block">{{ getRepayTimeLeft(order.createdAt) }}</small>
                 </button>
 
                 <button
@@ -234,19 +234,22 @@
     />
 
 
-    <CreateReturnRequestModal
-        v-if="showReturnRequestModal"
-        :order="selectedOrder"
-        :items="selectedItems"
-        @close="closeReturnRequestModal"
-    />
+   
+<CreateReturnRequestModal
+  v-if="showReturnRequestModal"
+  :order="selectedOrder"
+  :items="selectedItems"
+  @close="closeReturnRequestModal"
+  @submitted="handleReturnSubmitted"   
+/>
+
   </div>
 </template>
 
 <script setup>
 import {ref, computed, onMounted, onUnmounted} from 'vue'
 import { useRouter } from 'vue-router'
-import { deleteOrderById, getAllOrdersByUserId, updateOrderStatus, getReturnableItems } from '@/service/OrderApi.js'
+import { deleteOrderById, getAllOrdersByUserId, updateOrderStatus, getReturnableItems, sendOrderCancelledByUserEmail, sendOrderCompletedEmail ,getTransactionByOrderCode} from '@/service/OrderApi.js'
 import ShowToastComponent from "@/components/ShowToastComponent.vue"
 import cartApi from "@/service/CartApi.js";
 import emitter from "@/service/EvenBus.js";
@@ -289,16 +292,24 @@ const currentTime = ref(Date.now())
 // Set để theo dõi các đơn hàng đã được hủy tự động
 const autoCancelledOrders = ref(new Set())
 
+// Set để theo dõi các đơn hàng đã thanh toán thành công
+const paidOrders = ref(new Set())
+
 // Computed để theo dõi các đơn hàng cần cập nhật thời gian
 const ordersNeedingUpdate = computed(() => {
   const now = new Date(currentTime.value);
   
   return orders.value.filter(order => {
-    // Đơn hàng PENDING cần đếm ngược thanh toán
+    // Đơn hàng PENDING cần đếm ngược thanh toán (15 phút)
+    // Nhưng không theo dõi nếu đã thanh toán thành công
     if (order.status === 'PENDING' && 
         order.paymentMethod?.type === 'ONLINE_PAYMENT' &&
-        canRepay(order.createdAt)) {
-      return true;
+        order.createdAt &&
+        !autoCancelledOrders.value.has(order.id) &&
+        !paidOrders.value.has(order.id)) { // Không theo dõi đơn hàng đã thanh toán
+      const created = new Date(order.createdAt);
+      const expire = new Date(created.getTime() + 15 * 60 * 1000); // 15 phút
+      return now <= expire; // Chỉ theo dõi nếu chưa hết 15 phút
     }
     
     // Đơn hàng DELIVERED cần kiểm tra 7 ngày
@@ -313,9 +324,80 @@ const ordersNeedingUpdate = computed(() => {
     return false;
   });
 });
+// script setup
+const handleReturnSubmitted = async ({ orderId, remainingCount } = {}) => {
+  // đóng modal
+  showReturnRequestModal.value = false
+
+  // cập nhật trạng thái có còn trả được không
+  if (selectedOrder.value) {
+    if (typeof remainingCount === 'number') {
+      // cập nhật lạc quan nếu có dữ liệu
+      returnableByOrder.value = {
+        ...returnableByOrder.value,
+        [selectedOrder.value.id]: remainingCount > 0
+      }
+    } else {
+      // không có count → hỏi BE để chắc chắn
+      await refreshReturnable(selectedOrder.value)
+      // ép reactivity cho object
+      returnableByOrder.value = { ...returnableByOrder.value }
+    }
+  }
+
+  showToast('Gửi yêu cầu trả hàng thành công.', 'success')
+}
 
 const showToast = (message, type) => {
   toastRef.value?.showToast(message, type)
+}
+
+// Hàm để lấy trạng thái giao dịch từ hệ thống thanh toán
+const getTransactionStatus = async (orderCode) => {
+  try {
+    const response = await getTransactionByOrderCode(orderCode);
+    return response.data.data; // Trả về thông tin giao dịch
+  } catch (error) {
+    console.error('Lỗi khi lấy trạng thái giao dịch:', error);
+    return null;
+  }
+}
+
+// Hàm để kiểm tra trạng thái thanh toán thực tế
+const checkPaymentStatus = async (order) => {
+  if (!order.orderCode) return false;
+  
+  const transaction = await getTransactionStatus(order.orderCode);
+  if (!transaction) return false;
+  
+  // Kiểm tra trạng thái giao dịch từ hệ thống thanh toán
+  return transaction.status === 'SUCCESS' || transaction.paymentStatus === 'SUCCESS';
+}
+
+// Hàm để kiểm tra và cập nhật trạng thái thanh toán cho tất cả đơn hàng
+const checkAllPaymentStatuses = async () => {
+  const pendingOrders = orders.value.filter(order => 
+    order.status === 'PENDING' && 
+    order.paymentMethod?.type === 'ONLINE_PAYMENT' &&
+    order.orderCode
+  );
+  
+  for (const order of pendingOrders) {
+    try {
+      const isPaid = await checkPaymentStatus(order);
+      if (isPaid) {
+        paidOrders.value.add(order.id);
+        // Cập nhật trạng thái đơn hàng trong danh sách local
+        const orderIndex = orders.value.findIndex(o => o.id === order.id);
+        if (orderIndex !== -1) {
+          orders.value[orderIndex].paymentStatus = 'SUCCESS';
+          orders.value[orderIndex].status = 'CONFIRMED'; // Hoặc trạng thái phù hợp
+        }
+      }
+    } catch (error) {
+      console.error(`Lỗi khi kiểm tra trạng thái thanh toán cho đơn hàng ${order.orderCode}:`, error);
+    }
+  }
 }
 
 const tabs = ref([
@@ -460,9 +542,14 @@ const openCreateReturnRequestModal = (items) => {
   showReturnRequestModal.value = true;
 };
 
-const closeReturnRequestModal = () => {
-  showReturnRequestModal.value = false;
-};
+const closeReturnRequestModal = async () => {
+  showReturnRequestModal.value = false
+  if (selectedOrder.value) {
+    await refreshReturnable(selectedOrder.value)
+    returnableByOrder.value = { ...returnableByOrder.value }
+  }
+}
+
 
 const filteredOrders = computed(() => {
   let filtered = orders.value
@@ -507,6 +594,9 @@ const fetchOrders = async () => {
     }
   }
     console.log('Fetched orders:', res.data.data)
+    
+    // Kiểm tra trạng thái thanh toán cho tất cả đơn hàng PENDING
+    await checkAllPaymentStatuses();
     
     // Kiểm tra và hủy đơn hàng hết hạn ngay lập tức
     checkAndAutoCancelExpiredOrders();
@@ -678,6 +768,14 @@ const confirmAction = async () => {
     if (currentAction.value === 'cancel') {
       await deleteOrderById(orderId)
 
+      // Gửi email thông báo hủy đơn hàng bởi người dùng
+      try {
+        await sendOrderCancelledByUserEmail(orderId);
+      } catch (emailError) {
+        console.warn("Không thể gửi email thông báo hủy đơn hàng:", emailError);
+        // Không hiển thị lỗi cho user vì đơn hàng đã được hủy thành công
+      }
+
       const orderIndex = orders.value.findIndex(order => order.id === orderId)
       if (orderIndex !== -1) {
         orders.value[orderIndex].status = 'CANCELLED'
@@ -686,6 +784,14 @@ const confirmAction = async () => {
       showToast('Đơn hàng đã được hủy thành công', 'success')
     } else if (currentAction.value === 'confirm_received') {
       await updateOrderStatus(orderId, 'COMPLETED')
+
+      // Gửi email thông báo hoàn thành đơn hàng
+      try {
+        await sendOrderCompletedEmail(orderId);
+      } catch (emailError) {
+        console.warn("Không thể gửi email thông báo hoàn thành đơn hàng:", emailError);
+        // Không hiển thị lỗi cho user vì đơn hàng đã được hoàn thành thành công
+      }
 
       const orderIndex = orders.value.findIndex(order => order.id === orderId)
       if (orderIndex !== -1) {
@@ -774,9 +880,14 @@ const canShowRepayButton = (order) => {
     return false;
   }
   
-  // Hiển thị cho đơn hàng PENDING (chưa thanh toán) trong 15 phút
+  // Nếu đã thanh toán thành công, không hiển thị nút
+  if (paidOrders.value.has(order.id)) {
+    return false;
+  }
+  
+  // Hiển thị cho đơn hàng PENDING (chưa thanh toán)
   if (order.status === 'PENDING') {
-    return canRepay(order.createdAt);
+    return true;
   }
   
   // Hiển thị cho đơn hàng FAIL (thanh toán thất bại) - không giới hạn thời gian
@@ -801,7 +912,7 @@ const getRepayTimeLeft = (createdAt) => {
   if (!createdAt) return '';
   const created = new Date(createdAt);
   const now = new Date(currentTime.value); // Sử dụng currentTime để trigger reactivity
-  const expire = new Date(created.getTime() + 7 * 24 * 60  * 60 * 1000);
+  const expire = new Date(created.getTime() + 15 * 60 * 1000); // 15 phút
   const diff = expire - now;
   
   if (diff <= 0) return 'Hết hạn';
@@ -892,7 +1003,8 @@ const checkAndAutoCancelExpiredOrders = async () => {
     if (order.status === 'PENDING' && 
         order.paymentMethod?.type === 'ONLINE_PAYMENT' &&
         order.createdAt &&
-        !autoCancelledOrders.value.has(order.id)) { // Chưa được hủy tự động
+        !autoCancelledOrders.value.has(order.id) &&
+        !paidOrders.value.has(order.id)) { // Chưa được hủy tự động và chưa thanh toán
       const created = new Date(order.createdAt);
       const expire = new Date(created.getTime() + 15 * 60 * 1000); // 15 phút
       
@@ -916,10 +1028,11 @@ const checkAndAutoCancelExpiredOrders = async () => {
       const orderIndex = orders.value.findIndex(o => o.id === order.id);
       if (orderIndex !== -1) {
         orders.value[orderIndex].status = 'CANCELLED';
+        orders.value[orderIndex].updatedAt = new Date().toISOString();
       }
       
       // Hiển thị thông báo
-      showToast(`Đơn hàng ${order.orderCode} đã được tự động hủy do hết thời gian thanh toán`, 'info');
+      showToast(`Đơn hàng ${order.orderCode} đã được tự động hủy do hết thời gian thanh toán (15 phút)`, 'warning');
       
     } catch (error) {
       console.error(`Lỗi khi tự động hủy đơn hàng ${order.orderCode}:`, error);
@@ -964,6 +1077,8 @@ const checkAndAutoCompleteDeliveredOrders = async () => {
         orders.value[orderIndex].status = 'COMPLETED';
         // Cập nhật updatedAt để tính toán thời gian trả hàng
         orders.value[orderIndex].updatedAt = new Date().toISOString();
+         await refreshReturnable(orders.value[orderIndex])
+  returnableByOrder.value = { ...returnableByOrder.value }
       }
       
       // Hiển thị thông báo
@@ -984,9 +1099,14 @@ const startRepayTimerIfNeeded = () => {
   
   // Nếu có đơn hàng cần cập nhật thời gian, khởi động timer
   if (ordersNeedingUpdate.value.length > 0) {
-    repayTimer = setInterval(() => {
+    repayTimer = setInterval(async () => {
       // Force re-render để cập nhật thời gian
       currentTime.value = Date.now();
+      
+      // Kiểm tra trạng thái thanh toán định kỳ (mỗi 30 giây)
+      if (Math.floor(Date.now() / 1000) % 30 === 0) {
+        await checkAllPaymentStatuses();
+      }
       
       // Kiểm tra và tự động hủy đơn hàng hết hạn
       checkAndAutoCancelExpiredOrders();
@@ -1429,6 +1549,17 @@ onUnmounted(() => {
   font-size: 10px;
   opacity: 0.9;
   margin-top: 2px;
+}
+
+.btn-success:disabled {
+  background: #6c757d;
+  color: white;
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.btn-success:disabled:hover {
+  background: #6c757d;
 }
 
 /* Modal */

@@ -13,7 +13,7 @@ import java.util.List;
 @Service
 public interface ICartService  {
     CartItem addToCart(Long userId, Long productVariantId, Integer quantity) throws Exception;
-    void deleteItemCart(Long cartItemId,Long cartId) throws Exception;
+//    void deleteItemCart(Long cartItemId,Long cartId) throws Exception;
     void changeQuantity(Long cartItemId, Integer quantity) throws Exception;
     List<ProductCartResponse> getProductCartResponses(Long userId);
     void deleteCartItem(Long cartItemId) throws Exception;

@@ -1,7 +1,8 @@
 package com.example.shoozy_shop.controller;
 
-import com.example.shoozy_shop.dto.request.CouponRequest;
+import com.example.shoozy_shop.dto.request.CouponCreateRequest;
 import com.example.shoozy_shop.dto.request.CouponSendRequest;
+import com.example.shoozy_shop.dto.request.CouponUpdateRequest;
 import com.example.shoozy_shop.dto.response.CouponForOrderResponse;
 import com.example.shoozy_shop.dto.response.CouponResponse;
 import com.example.shoozy_shop.dto.response.ListCouponResponse;
@@ -36,7 +37,7 @@ public class CouponController {
 
     // Tạo mới coupon
     @PostMapping("/create")
-    public ResponseEntity<ApiResponse<CouponResponse>> createCoupon(@RequestBody CouponRequest couponRequest) throws Exception {
+    public ResponseEntity<ApiResponse<CouponResponse>> createCoupon(@RequestBody CouponCreateRequest couponRequest) throws Exception {
         CouponResponse createdCoupon = couponService.createCoupon(couponRequest);
         return ResponseEntity.ok(ApiResponse.success("Create coupon successfully", createdCoupon));
     }
@@ -45,7 +46,7 @@ public class CouponController {
     @PutMapping("/update/{id}")
     public ResponseEntity<ApiResponse<CouponResponse>> updateCoupon(
             @PathVariable("id") Long id,
-            @RequestBody CouponRequest couponRequest) throws Exception {
+            @RequestBody CouponUpdateRequest couponRequest) throws Exception {
         CouponResponse updatedCoupon = couponService.updateCoupon(id, couponRequest);
         return ResponseEntity.ok(ApiResponse.success("Update coupon successfully", updatedCoupon));
     }

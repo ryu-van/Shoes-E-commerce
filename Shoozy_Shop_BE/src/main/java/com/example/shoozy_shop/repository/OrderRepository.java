@@ -65,7 +65,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     // Thống kê đơn hàng tại quầy (type = 0 = offline)
     @Query("SELECT new com.example.shoozy_shop.dto.response.DailySummary(" +
-            "COUNT(o), COALESCE(SUM(o.finalPrice), 0)) " +
+            "COUNT(o), COALESCE(SUM(o.totalMoney), 0)) " +
             "FROM Order o " +
             "WHERE CAST(o.createdAt AS date) = :specificDate " +
             "AND o.status = 'COMPLETED' " +
@@ -74,7 +74,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     // Thống kê đơn hàng online (type = 1 = online)
     @Query("SELECT new com.example.shoozy_shop.dto.response.DailySummary(" +
-            "COUNT(o), COALESCE(SUM(o.finalPrice), 0)) " +
+            "COUNT(o), COALESCE(SUM(o.totalMoney), 0)) " +
             "FROM Order o " +
             "WHERE CAST(o.createdAt AS date) = :specificDate " +
             "AND o.status = 'COMPLETED' " +
@@ -83,14 +83,14 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     // Thống kê tổng số đơn hàng trong ngày
     @Query("SELECT new com.example.shoozy_shop.dto.response.DailySummary(" +
-            "COUNT(o), COALESCE(SUM(o.finalPrice), 0)) " +
+            "COUNT(o), COALESCE(SUM(o.totalMoney), 0)) " +
             "FROM Order o " +
             "WHERE CAST(o.createdAt AS date) = :specificDate " +
             "AND o.status = 'COMPLETED'")
     DailySummary countTotalOrdersByDate(@Param("specificDate") LocalDate specificDate);
 
     // Thống kê lợi nhuận, doanh thu,...
-    @Query("SELECT COALESCE(SUM(o.finalPrice - o.shippingFee), 0) " +
+    @Query("SELECT COALESCE(SUM(o.totalMoney), 0) " +
             "FROM Order o " +
             "WHERE YEAR(o.createdAt) = :year " +
             "AND MONTH(o.createdAt) = :month " +

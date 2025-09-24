@@ -31,6 +31,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     // Trả về giao dịch PENDING mới nhất theo order.orderCode
     Optional<Transaction> findTopByOrder_OrderCodeAndStatusOrderByCreatedAtDesc(String orderCode, String status);
 
+    Transaction findByOrder_OrderCode(String orderCode);
+
 
 
 }

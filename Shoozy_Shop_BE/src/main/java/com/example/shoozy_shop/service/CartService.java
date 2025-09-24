@@ -1,6 +1,7 @@
 package com.example.shoozy_shop.service;
 
 import com.example.shoozy_shop.dto.response.ProductCartResponse;
+import com.example.shoozy_shop.exception.OutOfStockException;
 import com.example.shoozy_shop.model.Cart;
 import com.example.shoozy_shop.model.CartItem;
 import com.example.shoozy_shop.model.ProductVariant;
@@ -41,10 +42,16 @@ public class CartService implements ICartService {
         ProductVariant productVariant = productVariantRepository.findById(productVariantId)
                 .orElseThrow(() -> new Exception("Product variant not found"));
 
-        // Kiểm tra CartItem đã tồn tại?
+        final int stock = productVariant.getQuantity();
+
         CartItem existingCartItem = cartItemRepository.findByCartIdAndProductVariantId(cart.getId(), productVariantId);
+        int cartQty = (existingCartItem != null) ? existingCartItem.getQuantity() : 0;
+        int allowAdd = Math.max(stock - cartQty, 0);
+        if (quantity > allowAdd) {
+            throw new OutOfStockException(cartQty, allowAdd);
+        }
         if (existingCartItem != null) {
-            existingCartItem.setQuantity(existingCartItem.getQuantity() + quantity);
+            existingCartItem.setQuantity(cartQty + quantity);
             return cartItemRepository.save(existingCartItem);
         } else {
             CartItem cartItem = new CartItem();
@@ -55,13 +62,13 @@ public class CartService implements ICartService {
         }
     }
 
-    @Override
-    @Transactional
-    public void deleteItemCart(Long cartItemId, Long cartId) throws Exception {
-        CartItem cartItem = cartItemRepository.findByIdAndCartId(cartItemId, cartId)
-                .orElseThrow(() -> new Exception("Cart item not found in this cart"));
-        cartItemRepository.delete(cartItem);
-    }
+//    @Override
+//    @Transactional
+//    public void deleteItemCart(Long cartItemId, Long cartId) throws Exception {
+//        CartItem cartItem = cartItemRepository.findByIdAndCartId(cartItemId, cartId)
+//                .orElseThrow(() -> new Exception("Cart item not found in this cart"));
+//        cartItemRepository.delete(cartItem);
+//    }
 
     @Override
     @Transactional
@@ -71,6 +78,16 @@ public class CartService implements ICartService {
         }
         CartItem cartItem = cartItemRepository.findById(cartItemId)
                 .orElseThrow(() -> new Exception("Cart item not found"));
+        ProductVariant productVariant = cartItem.getProductVariant();
+        if (productVariant == null) {
+            throw new Exception("Product variant not found for this cart item");
+        }
+        final int stock = productVariant.getQuantity();
+        int cartQty = cartItem.getQuantity();
+        int allowAdd = Math.max(stock - cartQty, 0);
+        if (quantity > stock) {
+            throw new OutOfStockException(cartQty,allowAdd);
+        }
         cartItem.setQuantity(quantity);
         cartItemRepository.save(cartItem);
     }

@@ -1,6 +1,7 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
 import { getVnPayReturn } from '@/service/PaymentService.js'
+import { sendOrderSuccessEmail } from '@/service/OrderApi.js'
 import { onMounted, ref } from 'vue'
 
 const route = useRoute()
@@ -15,6 +16,15 @@ onMounted(async () => {
     const res = await getVnPayReturn(params)
     result.value = res.data
     if (result.value.status === 200) {
+      // Gửi email thông báo đặt hàng thành công cho thanh toán online
+      if (result.value.data?.orderId) {
+        try {
+          await sendOrderSuccessEmail(result.value.data.orderId);
+        } catch (emailError) {
+          console.warn("Không thể gửi email thông báo:", emailError);
+          // Không hiển thị lỗi cho user vì thanh toán đã thành công
+        }
+      }
       router.replace('/orders/success')
     } else {
       error.value = result.value.message || 'Thanh toán thất bại!'

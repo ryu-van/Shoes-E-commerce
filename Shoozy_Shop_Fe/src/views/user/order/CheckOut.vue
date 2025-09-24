@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getCheckoutItems, createOrder } from '@/service/OrderApi.js'
+import { getCheckoutItems, createOrder, sendOrderSuccessEmail } from '@/service/OrderApi.js'
 import paymentMethodApi from '@/service/PaymentMethodApi.js'
 import couponApi from '@/service/CouponApi'
 import { createVnPayPayment } from '@/service/PaymentService.js'
@@ -10,8 +10,14 @@ import ListAddressModal from '@/components/ListAddressModal.vue'
 import { getSelectedAddress } from '@/service/AddressApi.js'
 import { ShippingApi } from '@/service/ShippingApi'
 
+
 // 🔌 WS utils
-import { connectWebSocket, subscribeCouponEvents } from '@/service/Websocket'
+import {
+  addCouponListener,
+  connectWebSocket, getStompClient,
+  isConnected,
+  removeCouponListener, subscribeCouponByCode,
+} from '@/service/Websocket'
 
 const route = useRoute()
 const router = useRouter()
@@ -174,11 +180,6 @@ const finalTotal = computed(() => {
   return previewTotal.value + shippingFee.value
 })
 
-// Giảm giá từ coupon
-const couponDiscount = computed(() => {
-  return Number(couponPreview.value?.discountAmount || 0)
-})
-
 // Giá cuối của item
 const getFinalProductPrice = (item) => {
   return (item.valuePromotion && item.valuePromotion > 0 && item.valuePromotion <= 100)
@@ -192,28 +193,285 @@ const getProductTotal = (item) => {
   return price * item.quantity
 }
 
-// ====== WS subscribe helper (có retry) ======
-const subscribeCurrentCoupon = (couponIdOrCode) => {
-  if (couponSub) {
-    try { couponSub.unsubscribe() } catch {}
-    couponSub = null
-  }
-  if (!couponIdOrCode) return
+const updateCouponPreviewFromWSData = (wsData) => {
+  if (!couponPreview.value) return
 
-  const trySub = (times = 0) => {
-    couponSub = subscribeCouponEvents(String(couponIdOrCode), (evt) => {
-      // evt: { type:'COUPON_EVENT', event:'DECREMENT'|'OUT_OF_STOCK', remaining, status, code, couponId, ... }
-      console.log('Coupon WS event:', evt)
-      if (evt.event === 'OUT_OF_STOCK' || evt.remaining === 0) {
-        toastRef.value?.showToast('Mã giảm giá đã hết lượt', 'warning')
-        removeCoupon()
+  console.log('Updating coupon preview from WS data:', wsData)
+
+  // Cập nhật thông tin coupon với dữ liệu từ WS
+  const updatedCoupon = {
+    ...couponPreview.value,
+    id: wsData.couponId ?? couponPreview.value.id,
+    value: wsData.value ?? couponPreview.value.value,
+    valueLimit: wsData.valueLimit ?? couponPreview.value.valueLimit,
+    condition: wsData.condition ?? couponPreview.value.condition,
+    quantity: wsData.quantity ?? couponPreview.value.quantity,
+    status: wsData.status ?? couponPreview.value.status,
+    type: wsData.couponType ?? couponPreview.value.type,
+    name: wsData.name ?? couponPreview.value.name
+  }
+
+  // Kiểm tra điều kiện áp dụng mới
+  const total = totalAfterProductPromotion.value
+  if (updatedCoupon.condition && total < updatedCoupon.condition) {
+    couponError.value = `Đơn tối thiểu ${formatPrice(updatedCoupon.condition)} mới dùng được mã này`
+    // Có thể tự động remove nếu không đủ điều kiện
+    toastRef.value?.showToast('Mã giảm giá đã thay đổi điều kiện, không còn phù hợp với đơn hàng hiện tại!', 'warning')
+    removeCoupon()
+    return
+  }
+
+  // Tính lại discount với thông tin mới
+  let newDiscountAmount = 0
+  if (updatedCoupon.type) {
+    newDiscountAmount = total * (updatedCoupon.value / 100)
+    if (updatedCoupon.valueLimit && newDiscountAmount > updatedCoupon.valueLimit) {
+      newDiscountAmount = updatedCoupon.valueLimit
+    }
+  } else {
+    newDiscountAmount = Math.min(updatedCoupon.value, total)
+  }
+
+  updatedCoupon.discountAmount = newDiscountAmount
+  couponPreview.value = updatedCoupon
+  couponError.value = ''
+
+  // Cập nhật success message để hiển thị thông tin mới
+  couponSuccess.value = `Áp dụng mã thành công: Giảm ${updatedCoupon.type ? updatedCoupon.value + '%' : formatPrice(updatedCoupon.value)}`
+
+  // Hiển thị thông báo cập nhật
+  const oldDiscount = couponPreview.value?.discountAmount || 0
+  if (Math.abs(newDiscountAmount - oldDiscount) > 1000) { // Chỉ báo nếu thay đổi > 1k
+    toastRef.value?.showToast(
+        `Mã giảm giá đã được cập nhật! Giảm giá mới: ${formatPrice(newDiscountAmount)}`,
+        'info'
+    )
+  }
+
+  console.log('Updated coupon preview from WS:', updatedCoupon)
+}
+
+// Sửa lại globalCouponHandler
+const globalCouponHandler = (data) => {
+  console.log('Global coupon event received:', data)
+
+  // Xử lý các loại event khác nhau
+  if (data.type === 'COUPON_QUANTITY_UPDATE' ||
+      data.type === 'COUPON_UPDATE' ||
+      data.type === 'coupon') {
+
+    // Refresh danh sách coupon khả dụng nếu đang mở
+    if (showCouponList.value) {
+      console.log('Refreshing available coupons list...')
+      loadAvailableCoupons()
+    }
+
+    // Kiểm tra nếu coupon hiện tại bị ảnh hưởng
+    if (couponPreview.value) {
+      const isCurrentCoupon = data.couponId === couponPreview.value.id ||
+          data.code === couponPreview.value.code ||
+          (data.code && couponPreview.value.code && data.code.toUpperCase() === couponPreview.value.code.toUpperCase())
+
+      console.log('Checking if current coupon affected:', {
+        wsDataCouponId: data.couponId,
+        wsDataCode: data.code,
+        currentCouponId: couponPreview.value.id,
+        currentCouponCode: couponPreview.value.code,
+        isCurrentCoupon
+      })
+
+      if (isCurrentCoupon) {
+        // Xử lý các trường hợp đặc biệt trước
+        if (data.quantity !== undefined && data.quantity <= 0) {
+          toastRef.value?.showToast('Mã giảm giá bạn đang sử dụng đã hết lượt!', 'warning')
+          removeCoupon()
+          return
+        } else if (data.event === 'EXPIRED' || data.status === 2) {
+          toastRef.value?.showToast('Mã giảm giá bạn đang sử dụng đã hết hạn!', 'warning')
+          removeCoupon()
+          return
+        } else if (data.status === 3) {
+          toastRef.value?.showToast('Mã giảm giá bạn đang sử dụng đã bị xóa!', 'warning')
+          removeCoupon()
+          return
+        }
+
+        // Cập nhật thông tin coupon nếu có thay đổi
+        if (data.action === 'COUPON_UPDATED' ||
+            data.action === 'update' ||
+            data.type === 'COUPON_UPDATE') {
+          console.log('Updating coupon from WS data...')
+
+          // Cập nhật trực tiếp từ WS data thay vì re-fetch
+          updateCouponPreviewFromWSData(data)
+
+          // Backup: Re-fetch từ API nếu cần thiết (uncomment nếu cần)
+          // setTimeout(() => refreshCurrentCoupon(), 500)
+        }
       }
-    })
-    if (!couponSub && times < 5) {
-      setTimeout(() => trySub(times + 1), 400)
     }
   }
-  trySub()
+}
+
+// Sửa lại handleCouponEvent trong subscribeCurrentCoupon
+const subscribeCurrentCoupon = (couponCode) => {
+  // Unsubscribe previous
+  if (couponSub) {
+    try {
+      couponSub.unsubscribe()
+      console.log('Unsubscribed from previous coupon')
+    } catch (e) {
+      console.warn('Error unsubscribing:', e)
+    }
+    couponSub = null
+  }
+
+  if (!couponCode) return
+
+  const handleCouponEvent = (data) => {
+    console.log('Direct coupon event received:', data)
+
+    // Gọi cùng logic như globalCouponHandler
+    if (couponPreview.value) {
+      const isCurrentCoupon = data.couponId === couponPreview.value.id ||
+          data.code === couponPreview.value.code ||
+          (data.code && couponPreview.value.code && data.code.toUpperCase() === couponPreview.value.code.toUpperCase())
+
+      if (isCurrentCoupon) {
+        // Xử lý trực tiếp các event
+        if (data.quantity !== undefined && data.quantity <= 0) {
+          toastRef.value?.showToast('Mã giảm giá đã hết lượt!', 'warning')
+          removeCoupon()
+        } else if (data.event === 'EXPIRED' || data.status === 2) {
+          toastRef.value?.showToast('Mã giảm giá đã hết hạn!', 'warning')
+          removeCoupon()
+        } else if (data.status === 3) {
+          toastRef.value?.showToast('Mã giảm giá đã bị xóa!', 'warning')
+          removeCoupon()
+        } else if (data.action === 'COUPON_UPDATED' || data.type === 'COUPON_UPDATE') {
+          console.log('Updating coupon from direct subscription...')
+          updateCouponPreviewFromWSData(data)
+        }
+      }
+    }
+  }
+
+  // Subscribe logic với retry mechanism (giữ nguyên)
+  const attemptSubscribe = (retries = 10) => {
+    if (retries <= 0) {
+      console.error('Failed to subscribe after multiple attempts')
+      return
+    }
+
+    if (!isConnected() || !getStompClient()?.connected) {
+      console.warn(`WebSocket not ready, retry ${11 - retries}/10...`)
+      setTimeout(() => attemptSubscribe(retries - 1), 500)
+      return
+    }
+
+    try {
+      const client = getStompClient()
+      if (!client) {
+        console.warn('STOMP client not available')
+        setTimeout(() => attemptSubscribe(retries - 1), 500)
+        return
+      }
+
+      couponSub = client.subscribe(`/topic/coupons/${couponCode}`, (message) => {
+        try {
+          const data = JSON.parse(message.body)
+          console.log(`Coupon ${couponCode} event:`, data)
+          handleCouponEvent(data)
+        } catch (e) {
+          console.error('Parse coupon event error:', e)
+        }
+      })
+
+      if (couponSub) {
+        console.log(`Successfully subscribed to coupon: ${couponCode}`)
+      } else {
+        console.warn('Subscribe returned null, retrying...')
+        setTimeout(() => attemptSubscribe(retries - 1), 500)
+      }
+    } catch (error) {
+      console.error('Error subscribing to coupon:', error)
+      setTimeout(() => attemptSubscribe(retries - 1), 500)
+    }
+  }
+
+  // Wait a bit for connection to stabilize before subscribing
+  setTimeout(() => attemptSubscribe(), 100)
+}
+
+// Thêm debugging để theo dõi coupon preview changes
+watch(couponPreview, (newVal, oldVal) => {
+  if (newVal && oldVal) {
+    console.log('Coupon preview updated:', {
+      old: {
+        id: oldVal.id,
+        code: oldVal.code,
+        value: oldVal.value,
+        valueLimit: oldVal.valueLimit,
+        condition: oldVal.condition,
+        discountAmount: oldVal.discountAmount
+      },
+      new: {
+        id: newVal.id,
+        code: newVal.code,
+        value: newVal.value,
+        valueLimit: newVal.valueLimit,
+        condition: newVal.condition,
+        discountAmount: newVal.discountAmount
+      }
+    })
+  } else if (newVal && !oldVal) {
+    console.log('Coupon preview set:', newVal)
+  } else if (!newVal && oldVal) {
+    console.log('Coupon preview removed')
+  }
+}, { deep: true })
+
+// Thêm function để refresh coupon hiện tại
+const refreshCurrentCoupon = async () => {
+  if (!couponPreview.value?.code) return
+
+  try {
+    console.log('Refreshing current coupon:', couponPreview.value.code)
+    const id_user = user.value?.id || null
+    const res = await couponApi.getCouponByCode(couponPreview.value.code, id_user)
+    const updatedCoupon = res?.data?.data
+
+    if (updatedCoupon?.id) {
+      // Tính lại discount amount với dữ liệu mới
+      const total = totalAfterProductPromotion.value
+      let discountAmount = 0
+
+      if (updatedCoupon.type) {
+        discountAmount = total * (updatedCoupon.value / 100)
+        if (updatedCoupon.valueLimit && discountAmount > updatedCoupon.valueLimit) {
+          discountAmount = updatedCoupon.valueLimit
+        }
+      } else {
+        discountAmount = Math.min(updatedCoupon.value, total)
+      }
+
+      // Cập nhật coupon preview với dữ liệu mới
+      couponPreview.value = {
+        ...updatedCoupon,
+        code: updatedCoupon.code || couponPreview.value.code,
+        discountAmount
+      }
+
+      console.log('Updated coupon preview:', couponPreview.value)
+    }
+  } catch (error) {
+    console.error('Error refreshing coupon:', error)
+    // Nếu không thể refresh, có thể coupon đã bị xóa hoặc hết hạn
+    if (error?.response?.status === 404) {
+      toastRef.value?.showToast('Mã giảm giá không còn khả dụng!', 'warning')
+      removeCoupon()
+    }
+  }
 }
 
 // ====== LIFECYCLE ======
@@ -221,7 +479,7 @@ onMounted(async () => {
   try {
     // Kết nối WS sớm để nhận realtime coupon
     connectWebSocket()
-
+    addCouponListener(globalCouponHandler)
     user.value = JSON.parse(localStorage.getItem('user') || '{}')
     if (!user.value?.id) {
       toastRef.value?.showToast('Vui lòng đăng nhập để tiếp tục!', 'error')
@@ -244,7 +502,7 @@ onMounted(async () => {
         user.value.address = line
         selectedAddressObj.value = selectedAddress
       } else {
-        toastRef.value?.showToast('Vui lòng chọn địa chỉ để tính phí vận chuyển', 'warning')
+        toastRef.value?.showToast('Vui lòng chọn địa chỉ giao hàng', 'warning')
       }
     } catch {
       toastRef.value?.showToast('Vui lòng chọn địa chỉ để tính phí vận chuyển', 'warning')
@@ -290,6 +548,7 @@ onMounted(async () => {
       })
     })
 
+    // weight log
     const totalWeight = getCartWeight()
     console.log('Total cart weight:', totalWeight, 'grams')
 
@@ -310,6 +569,9 @@ onBeforeUnmount(() => {
     try { couponSub.unsubscribe() } catch {}
     couponSub = null
   }
+
+  // Remove global listener
+  removeCouponListener(globalCouponHandler)
 })
 
 // Auto recalc phí khi giỏ hàng/địa chỉ đổi
@@ -328,6 +590,46 @@ watch(totalAfterProductPromotion, () => {
     loadAvailableCoupons()
   }
 })
+
+watch([totalAfterProductPromotion], () => {
+  if (showCouponList.value) {
+    loadAvailableCoupons()
+  }
+
+  // Cũng kiểm tra lại coupon hiện tại nếu có
+  if (couponPreview.value) {
+    // Kiểm tra lại điều kiện áp dụng với tổng tiền mới
+    const total = totalAfterProductPromotion.value
+    if (couponPreview.value.condition && total < couponPreview.value.condition) {
+      couponError.value = `Đơn tối thiểu ${formatPrice(couponPreview.value.condition)} mới dùng được mã này`
+      // Có thể tự động remove coupon nếu không đủ điều kiện
+      // removeCoupon()
+    } else {
+      couponError.value = ''
+      // Tính lại discount amount
+      let newDiscountAmount = 0
+      if (couponPreview.value.type) {
+        newDiscountAmount = total * (couponPreview.value.value / 100)
+        if (couponPreview.value.valueLimit && newDiscountAmount > couponPreview.value.valueLimit) {
+          newDiscountAmount = couponPreview.value.valueLimit
+        }
+      } else {
+        newDiscountAmount = Math.min(couponPreview.value.value, total)
+      }
+      couponPreview.value.discountAmount = newDiscountAmount
+    }
+  }
+}, { immediate: true })
+
+// Thêm reactive watcher cho couponPreview để log thay đổi
+watch(couponPreview, (newVal, oldVal) => {
+  if (newVal && oldVal) {
+    console.log('Coupon preview updated:', {
+      old: { value: oldVal.value, valueLimit: oldVal.valueLimit, discountAmount: oldVal.discountAmount },
+      new: { value: newVal.value, valueLimit: newVal.valueLimit, discountAmount: newVal.discountAmount }
+    })
+  }
+}, { deep: true })
 
 // ====== COUPON ======
 const loadAvailableCoupons = async () => {
@@ -479,6 +781,7 @@ const toggleCouponList = () => {
 }
 
 // ====== CHECKOUT ======
+
 const handleCheckout = async () => {
   if (!user.value?.id) {
     toastRef.value?.showToast('Vui lòng đăng nhập lại!', 'error')
@@ -532,7 +835,9 @@ const handleCheckout = async () => {
     }
 
     const selectedPaymentMethod = paymentMethods.value.find(pm => pm.id === selectedPaymentMethodId.value)
+
     if (selectedPaymentMethod?.type === 'ONLINE_PAYMENT') {
+      // Thanh toán online - chỉ gọi createVnPayPayment
       const res = await createVnPayPayment(orderRequest)
       const apiRes = res?.data
       if (apiRes?.status === 200 && apiRes?.data) {
@@ -543,9 +848,18 @@ const handleCheckout = async () => {
       }
     } else {
       // COD
-      await createOrder(orderRequest)
-      toastRef.value?.showToast('Đặt hàng thành công!', 'success')
-      router.replace('/orders/success')
+      const orderResponse = await createOrder(orderRequest);
+      // Gửi email thông báo đặt hàng thành công
+      if (orderResponse?.data?.data?.id) {
+        try {
+          await sendOrderSuccessEmail(orderResponse.data.data.id)
+        } catch (emailError) {
+          console.warn("Không thể gửi email thông báo:", emailError)
+          // Không hiển thị lỗi cho user vì đơn hàng đã tạo thành công
+        }
+      }
+      toastRef.value?.showToast("Đặt hàng thành công!", "success")
+      router.replace("/orders/success")
     }
   } catch (error) {
     console.error('Lỗi khi đặt hàng:', error)
@@ -660,6 +974,10 @@ const handleSaveAddress = (addressObj) => {
                       </div>
                     </div>
                   </div>
+                </div>
+                <div class="d-flex justify-content-between align-items-center pt-2 mt-2">
+                  <span class="text-muted">Tổng tiền sản phẩm:</span>
+                  <strong class="fs-6">{{ formatPrice(totalAfterProductPromotion) }}</strong>
                 </div>
               </div>
             </div>
@@ -783,8 +1101,8 @@ const handleSaveAddress = (addressObj) => {
                   <i class="fas fa-ticket-alt me-2 text-primary"></i>
                   Mã giảm giá
                 </h5>
-                <button
-                  class="btn btn-outline-primary btn-sm"
+                <button 
+                  class="btn btn-outline-primary btn-sm" 
                   @click="toggleCouponList"
                   :disabled="couponListLoading"
                 >
@@ -802,15 +1120,15 @@ const handleSaveAddress = (addressObj) => {
                     </div>
                     <p class="mt-2 text-muted">Đang tải mã giảm giá...</p>
                   </div>
-
+                  
                   <div v-else-if="availableCoupons.length === 0" class="text-center py-3">
                     <i class="fas fa-ticket-alt text-muted" style="font-size: 2rem;"></i>
                     <p class="mt-2 text-muted">Không có mã giảm giá khả dụng</p>
                   </div>
-
+                  
                   <div v-else class="coupon-list">
-                    <div
-                      v-for="(coupon, index) in availableCoupons"
+                    <div 
+                      v-for="(coupon, index) in availableCoupons" 
                       :key="coupon.id"
                       class="coupon-item"
                       :class="{ 'best-coupon': index === 0 }"
@@ -832,13 +1150,13 @@ const handleSaveAddress = (addressObj) => {
                           </span>
                         </div>
                       </div>
-
+                      
                       <div class="coupon-details">
                         <div class="coupon-condition">
                           <i class="fas fa-info-circle me-1"></i>
                           Đơn hàng tối thiểu: {{ formatPrice(coupon.condition) }}
                         </div>
-
+                        
                         <div class="coupon-discount">
                           <strong>Tiết kiệm: {{ formatPrice(coupon.actualDiscount) }}</strong>
                           <span v-if="coupon.type && coupon.valueLimit" class="text-muted ms-2">
@@ -881,33 +1199,35 @@ const handleSaveAddress = (addressObj) => {
                 </div>
 
                 <div class="order-summary border-top pt-3 mt-3">
-                  <div class="summary-row summary-row--line d-flex justify-content-between align-items-center">
-                    <span class="summary-label">Tổng tiền hàng</span>
-                    <strong class="summary-amount">{{ formatPrice(totalAfterProductPromotion) }}</strong>
+                  <div class="summary-row d-flex justify-content-between">
+                    <span class="text-muted">Tổng giá trị đơn hàng:</span>
+                    <strong class="text-end">{{ formatPrice(totalAfterProductPromotion) }}</strong>
                   </div>
-
-                  <div class="summary-row summary-row--shipping d-flex justify-content-between align-items-start">
-                    <span class="summary-label">
-                      <i class="fas fa-truck me-1"></i>Phí vận chuyển
+                  <div class="summary-row d-flex justify-content-between text-success"
+                       v-if="totalBeforeDiscount > totalAfterProductPromotion">
+                    <span><i class="fas fa-tag me-1"></i>Khuyến mãi sản phẩm:</span>
+                    <strong class="text-end">-{{ formatPrice(totalBeforeDiscount - totalAfterProductPromotion) }}</strong>
+                  </div>
+                  <div class="summary-row d-flex justify-content-between text-danger"
+                       v-if="couponPreview?.discountAmount">
+                    <span><i class="fas fa-tag me-1"></i>Giảm giá :</span>
+                    <strong class="text-end">-{{ formatPrice(couponPreview.discountAmount) }}</strong>
+                  </div>
+                  <div class="summary-row d-flex justify-content-between">
+                    <span>
+                      <i class="fas fa-truck me-1"></i>Phí vận chuyển:
                       <span v-if="isCalculatingShipping" class="ms-1 text-muted">
                         <small><i class="fas fa-spinner fa-spin"></i> Đang tính...</small>
                       </span>
                     </span>
-                    <strong class="summary-amount">{{ formatPrice(shippingFee) }}</strong>
+                    <strong class="text-end">{{ formatPrice(shippingFee) }}</strong>
                   </div>
                   <div v-if="shippingError" class="summary-row text-danger">
                     <small><i class="fas fa-exclamation-circle me-1"></i>{{ shippingError }}</small>
                   </div>
-
-                  <div class="summary-row summary-row--discount d-flex justify-content-between align-items-center"
-                       v-if="couponDiscount > 0">
-                    <span class="summary-label"><i class="fas fa-ticket-alt me-1"></i>Số tiền trừ (mã giảm giá)</span>
-                    <strong class="summary-amount text-danger">-{{ formatPrice(couponDiscount) }}</strong>
-                  </div>
-
-                  <div class="summary-row d-flex justify-content-between align-items-center border-top pt-2 mt-2">
-                    <span class="summary-total-label">Tổng tiền đơn hàng</span>
-                    <strong class="summary-total-amount">{{ formatPrice(finalTotal) }}</strong>
+                  <div class="summary-row d-flex justify-content-between border-top pt-2 mt-2">
+                    <span>Tổng cộng:</span>
+                    <strong class="text-primary fs-4 text-end">{{ formatPrice(finalTotal) }}</strong>
                   </div>
                 </div>
               </div>
@@ -952,8 +1272,6 @@ const handleSaveAddress = (addressObj) => {
   />
 </template>
 
-
-
 <style scoped>
 /* Loading */
 .loading-container {
@@ -962,52 +1280,52 @@ const handleSaveAddress = (addressObj) => {
 .loading-spinner { text-align: center; }
 
 /* Main */
-.checkout-container {
-  max-width: 1330px;
-  margin: 2rem auto;
-  padding: 0 1rem;
+.checkout-container { 
+  max-width: 1330px; 
+  margin: 2rem auto; 
+  padding: 0 1rem; 
   min-height: 90vh;
 }
 
 /* Header */
-.checkout-header {
-  text-align: center;
-  margin-bottom: 2rem;
+.checkout-header { 
+  text-align: center; 
+  margin-bottom: 2rem; 
   background: white;
   border-radius: 20px;
   padding: 2rem;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
 }
-.checkout-title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: #1f2937;
-  margin-bottom: 1.5rem;
+.checkout-title { 
+  font-size: 1.75rem; 
+  font-weight: 700; 
+  color: #1f2937; 
+  margin-bottom: 1.5rem; 
 }
 .checkout-steps { display: flex; justify-content: center; gap: 2rem; margin-bottom: 2rem; }
 .step { display: flex; flex-direction: column; align-items: center; position: relative; }
-.step:not(:last-child)::after {
-  content: '';
-  position: absolute;
-  top: 15px;
-  right: -1.5rem;
-  width: 2rem;
-  height: 2px;
-  background: #e2e8f0;
+.step:not(:last-child)::after { 
+  content: ''; 
+  position: absolute; 
+  top: 15px; 
+  right: -1.5rem; 
+  width: 2rem; 
+  height: 2px; 
+  background: #e2e8f0; 
 }
 .step.completed::after, .step.active::after { background: #1F2937; }
-.step-number {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #e2e8f0;
-  color: #6c757d;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 0.85rem;
-  margin-bottom: 0.5rem;
+.step-number { 
+  width: 28px; 
+  height: 28px; 
+  border-radius: 50%; 
+  background: #e2e8f0; 
+  color: #6c757d; 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  font-weight: 600; 
+  font-size: 0.85rem; 
+  margin-bottom: 0.5rem; 
 }
 .step.completed .step-number { background: #059669; color: #fff; }
 .step.active .step-number { background: #1F2937; color: #fff; }
@@ -1021,51 +1339,51 @@ const handleSaveAddress = (addressObj) => {
 .sticky-coupon-group { position: sticky; top: 20px; z-index: 10; }
 
 /* Cards */
-.checkout-card {
-  background: #fff;
-  border-radius: 20px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
-  transition: all 0.3s ease;
-  border: 1px solid #e2e8f0;
+.checkout-card { 
+  background: #fff; 
+  border-radius: 20px; 
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1); 
+  overflow: hidden; 
+  transition: all 0.3s ease; 
+  border: 1px solid #e2e8f0; 
 }
 
-.card-header {
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  padding: 1.5rem 1.5rem;
+.card-header { 
+  background: #fff; 
+  border-bottom: 1px solid #e2e8f0; 
+  padding: 1.5rem 1.5rem; 
 }
-.card-title {
-  margin: 0;
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: #1f2937;
+.card-title { 
+  margin: 0; 
+  font-size: 1.1rem; 
+  font-weight: 700; 
+  color: #1f2937; 
 }
 .card-body { padding: 1.5rem; }
 
 /* Payment Methods */
 .payment-methods { display: flex; flex-direction: column; gap: .75rem; }
-.payment-method {
-  display: flex;
-  align-items: center;
-  padding: 1rem;
-  border: 2px solid #e2e8f0;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.3s ease;
+.payment-method { 
+  display: flex; 
+  align-items: center; 
+  padding: 1rem; 
+  border: 2px solid #e2e8f0; 
+  border-radius: 12px; 
+  cursor: pointer; 
+  transition: all 0.3s ease; 
   background: #fff;
 }
 
-.payment-method.active {
-  border-color: #1F2937;
-  background: #f1f5f9;
+.payment-method.active { 
+  border-color: #1F2937; 
+  background: #f1f5f9; 
   box-shadow: 0 4px 12px rgba(31, 41, 55, 0.15);
 }
 .payment-radio { margin-right: 1rem; }
-.payment-radio input {
-  width: 18px;
-  height: 18px;
-  accent-color: #1F2937;
+.payment-radio input { 
+  width: 18px; 
+  height: 18px; 
+  accent-color: #1F2937; 
 }
 .payment-info { display: flex; justify-content: space-between; align-items: center; flex: 1; }
 .payment-name { font-weight: 600; color: #1f2937; font-size: 0.9rem; }
@@ -1074,106 +1392,106 @@ const handleSaveAddress = (addressObj) => {
 /* Form */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .form-group.full-width { grid-column: 1 / -1; }
-.form-label {
-  display: block;
-  margin-bottom: .5rem;
-  font-weight: 600;
-  color: #374151;
+.form-label { 
+  display: block; 
+  margin-bottom: .5rem; 
+  font-weight: 600; 
+  color: #374151; 
   font-size: 0.9rem;
 }
-.form-control {
-  width: 100%;
-  padding: .875rem;
-  border: 2px solid #e2e8f0;
-  border-radius: 10px;
-  font-size: 0.9rem;
-  transition: all 0.3s ease;
+.form-control { 
+  width: 100%; 
+  padding: .875rem; 
+  border: 2px solid #e2e8f0; 
+  border-radius: 10px; 
+  font-size: 0.9rem; 
+  transition: all 0.3s ease; 
   background: #fff;
 }
-.form-control:focus {
-  outline: none;
-  border-color: #1F2937;
-  box-shadow: 0 0 0 3px rgba(31, 41, 55, 0.1);
+.form-control:focus { 
+  outline: none; 
+  border-color: #1F2937; 
+  box-shadow: 0 0 0 3px rgba(31, 41, 55, 0.1); 
 }
-.form-control:readonly {
-  background: #f8f9fa;
-  color: #6c757d;
+.form-control:readonly { 
+  background: #f8f9fa; 
+  color: #6c757d; 
 }
 
 /* Address */
 .address-display-container { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .default-address-display { flex: 1; }
-.btn-address {
-  background: #1F2937;
-  border: 2px solid #1F2937;
-  border-radius: 10px;
-  padding: .75rem 1rem;
-  font-size: .875rem;
-  color: #fff;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  white-space: nowrap;
+.btn-address { 
+  background: #1F2937; 
+  border: 2px solid #1F2937; 
+  border-radius: 10px; 
+  padding: .75rem 1rem; 
+  font-size: .875rem; 
+  color: #fff; 
+  cursor: pointer; 
+  transition: all 0.3s ease; 
+  white-space: nowrap; 
   font-weight: 600;
 }
-.btn-address:hover {
-  background: #252e3e;
-  border-color: #252e3e;
+.btn-address:hover { 
+  background: #252e3e; 
+  border-color: #252e3e; 
   box-shadow: 0 8px 25px rgba(31, 41, 55, 0.3);
 }
 
 /* Order items */
 .order-items { margin-bottom: 1.5rem; }
-.order-item {
-  display: flex;
-  gap: 1rem;
-  padding: 1rem 0;
-  border-bottom: 1px solid #e2e8f0;
+.order-item { 
+  display: flex; 
+  gap: 1rem; 
+  padding: 1rem 0; 
+  border-bottom: 1px solid #e2e8f0; 
 }
 .order-item:last-child { border-bottom: none; }
-.item-index {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: #1F2937;
-  color: #fff;
-  border-radius: 50%;
-  font-size: .8rem;
-  font-weight: 700;
-  flex-shrink: 0;
+.item-index { 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  width: 28px; 
+  height: 28px; 
+  background: #1F2937; 
+  color: #fff; 
+  border-radius: 50%; 
+  font-size: .8rem; 
+  font-weight: 700; 
+  flex-shrink: 0; 
 }
 .item-image { position: relative; flex-shrink: 0; }
-.item-image img {
-  width: 60px;
-  height: 60px;
-  object-fit: cover;
-  border-radius: 10px;
-  border: 2px solid #e2e8f0;
+.item-image img { 
+  width: 60px; 
+  height: 60px; 
+  object-fit: cover; 
+  border-radius: 10px; 
+  border: 2px solid #e2e8f0; 
 }
 .item-details { flex: 1; }
-.item-name {
-  font-size: .9rem;
-  font-weight: 600;
-  color: #1f2937;
-  margin: 0 0 .5rem;
-  line-height: 1.3;
+.item-name { 
+  font-size: .9rem; 
+  font-weight: 600; 
+  color: #1f2937; 
+  margin: 0 0 .5rem; 
+  line-height: 1.3; 
 }
 .item-variants { display: flex; gap: .5rem; margin-bottom: .5rem; }
-.variant-tag {
-  background: #f1f5f9;
-  color: #374151;
-  padding: .25rem .5rem;
-  border-radius: 6px;
-  font-size: .8rem;
-  font-weight: 500;
+.variant-tag { 
+  background: #f1f5f9; 
+  color: #374151; 
+  padding: .25rem .5rem; 
+  border-radius: 6px; 
+  font-size: .8rem; 
+  font-weight: 500; 
 }
-.item-price-section {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: .5rem;
+.item-price-section { 
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center; 
+  flex-wrap: wrap; 
+  gap: .5rem; 
 }
 .quantity-section { display: flex; align-items: center; gap: .5rem; }
 .quantity-label { font-size: .85rem; color: #6c757d; }
@@ -1182,45 +1500,45 @@ const handleSaveAddress = (addressObj) => {
 .unit-price { font-size: .85rem; color: #6c757d; }
 .total-price { font-weight: 600; color: #1f2937; }
 .promotion-price { display: flex; flex-direction: column; align-items: flex-end; }
-.original-price {
-  text-decoration: line-through;
-  font-size: .8rem;
-  color: #6c757d;
-  margin-bottom: .25rem;
+.original-price { 
+  text-decoration: line-through; 
+  font-size: .8rem; 
+  color: #6c757d; 
+  margin-bottom: .25rem; 
 }
-.discount-percent {
-  font-size: .8rem;
-  color: #dc3545;
-  font-weight: 600;
-  margin-bottom: .25rem;
+.discount-percent { 
+  font-size: .8rem; 
+  color: #dc3545; 
+  font-weight: 600; 
+  margin-bottom: .25rem; 
 }
-.promotion-price-value {
-  font-weight: 600;
-  color: #1f2937;
-  font-size: 1rem;
+.promotion-price-value { 
+  font-weight: 600; 
+  color: #1f2937; 
+  font-size: 1rem; 
 }
 
 /* Summary */
-.order-summary {
-  border-top: 1px solid #e2e8f0;
-  padding-top: 1rem;
-  margin-bottom: 1.5rem;
+.order-summary { 
+  border-top: 1px solid #e2e8f0; 
+  padding-top: 1rem; 
+  margin-bottom: 1.5rem; 
 }
-.order-summary .summary-row {
-  margin-bottom: .5rem;
-  font-size: 0.9rem;
+.order-summary .summary-row { 
+  margin-bottom: .5rem; 
+  font-size: 0.9rem; 
 }
-.order-summary .summary-row strong {
-  min-width: 100px;
-  display: inline-block;
-  text-align: right;
+.order-summary .summary-row strong { 
+  min-width: 100px; 
+  display: inline-block; 
+  text-align: right; 
 }
 
 /* Buttons */
-.btn-checkout {
-  padding: 1rem 2rem;
-  font-size: 1.1rem;
-  font-weight: 700;
+.btn-checkout { 
+  padding: 1rem 2rem; 
+  font-size: 1.1rem; 
+  font-weight: 700; 
   background: #1F2937;
   border: 2px solid #1F2937;
   border-radius: 35px;

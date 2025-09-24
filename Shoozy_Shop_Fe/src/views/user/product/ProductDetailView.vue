@@ -68,8 +68,9 @@ const recommendations = ref([])
 const availableColors = computed(() => {
   if (!product.value) return []
   const colorMap = new Map()
+  // Chỉ lấy những màu có ít nhất 1 variant có sellPrice
   product.value.variants.forEach(variant => {
-    if (!colorMap.has(variant.color.id)) {
+    if (variant.sellPrice && variant.sellPrice > 0 && !colorMap.has(variant.color.id)) {
       colorMap.set(variant.color.id, variant.color)
     }
   })
@@ -78,23 +79,41 @@ const availableColors = computed(() => {
 
 const availableSizes = computed(() => {
   if (!product.value || !selectedColor.value) return []
+
+  // Chỉ lấy những size có sellPrice và thuộc màu đã chọn
   return product.value.variants
-      .filter(variant => variant.color.id === selectedColor.value.id)
+      .filter(variant =>
+          variant.color.id === selectedColor.value.id &&
+          variant.sellPrice &&
+          variant.sellPrice > 0
+      )
       .map(variant => variant.size)
 })
+// Sửa lại các computed properties liên quan đến giá và khuyến mãi
 
 const currentPrice = computed(() => {
-  if (!product.value || !selectedColor.value || !selectedSize.value) {
-    return `${product.value?.minPrice?.toLocaleString()} - ${product.value?.maxPrice?.toLocaleString()}`
-  }
-  const variant = product.value.variants.find(v =>
-      v.color.id === selectedColor.value.id && v.size.id === selectedSize.value.id
-  )
-  return variant ? variant.sellPrice.toLocaleString() : ''
-})
+  if (!product.value) return null
 
-// Discount calculations
+  if (selectedColor.value && selectedSize.value) {
+    // Khi đã chọn màu và size cụ thể
+    const variant = product.value.variants.find(v =>
+        v.color.id === selectedColor.value.id && v.size.id === selectedSize.value.id
+    )
+    return variant ? variant.sellPrice : null
+  } else {
+    // Khi chưa chọn màu/size, return object với min/max
+    return {
+      min: product.value.minPrice,
+      max: product.value.maxPrice
+    }
+  }
+})
+// Thay thế các computed properties liên quan đến giá trong Vue component:
+
+// 1. Sửa lại computed discountPercentage
 const discountPercentage = computed(() => {
+  if (!product.value) return null
+
   if (selectedColor.value && selectedSize.value) {
     // Khi đã chọn màu và size cụ thể, lấy customValue từ variant
     const variant = product.value.variants.find(v =>
@@ -115,55 +134,66 @@ const discountPercentage = computed(() => {
   return null
 })
 
-const discountedPrice = computed(() => {
-  if (!discountPercentage.value) return null
-
-  if (selectedColor.value && selectedSize.value) {
-    const variant = product.value.variants.find(v =>
-        v.color.id === selectedColor.value.id && v.size.id === selectedSize.value.id
-    )
-    if (variant) {
-      const originalPrice = variant.sellPrice
-      const discountAmount = (originalPrice * discountPercentage.value) / 100
-      return originalPrice - discountAmount
-    }
-  } else {
-    // Tính giá sau giảm cho khoảng giá
-    const minDiscountAmount = (product.value.minPrice * discountPercentage.value) / 100
-    const maxDiscountAmount = (product.value.maxPrice * discountPercentage.value) / 100
-    return {
-      min: product.value.minPrice - minDiscountAmount,
-      max: product.value.maxPrice - maxDiscountAmount
-    }
-  }
-  return null
-})
-
+// 2. Sửa lại computed displayPrice
 const displayPrice = computed(() => {
-  if (!discountedPrice.value) {
-    // Không có giảm giá
-    if (selectedColor.value && selectedSize.value) {
-      return currentPrice.value + ' VNĐ'
+  if (!currentPrice.value) return 'Đang cập nhật...'
+
+  if (selectedColor.value && selectedSize.value) {
+    // Đã chọn màu và size cụ thể
+    const originalPrice = currentPrice.value
+
+    if (discountPercentage.value && discountPercentage.value > 0) {
+      // Có khuyến mãi - tính giá sau giảm
+      const discountAmount = (originalPrice * discountPercentage.value) / 100
+      const finalPrice = Math.max(0, originalPrice - discountAmount)
+      return finalPrice.toLocaleString() + ' VNĐ'
     } else {
-      return `${product.value?.minPrice?.toLocaleString()} - ${product.value?.maxPrice?.toLocaleString()} VNĐ`
+      // Không có khuyến mãi
+      return originalPrice.toLocaleString() + ' VNĐ'
     }
   } else {
-    // Có giảm giá
-    if (selectedColor.value && selectedSize.value) {
-      return discountedPrice.value.toLocaleString() + ' VNĐ'
+    // Chưa chọn màu/size - hiển thị khoảng giá
+    if (discountPercentage.value && discountPercentage.value > 0) {
+      // Có khuyến mãi - tính khoảng giá sau giảm
+      const minDiscountAmount = (currentPrice.value.min * discountPercentage.value) / 100
+      const maxDiscountAmount = (currentPrice.value.max * discountPercentage.value) / 100
+
+      const minFinalPrice = Math.max(0, currentPrice.value.min - minDiscountAmount)
+      const maxFinalPrice = Math.max(0, currentPrice.value.max - maxDiscountAmount)
+
+      if (minFinalPrice === maxFinalPrice) {
+        return minFinalPrice.toLocaleString() + ' VNĐ'
+      } else {
+        return `${minFinalPrice.toLocaleString()} - ${maxFinalPrice.toLocaleString()} VNĐ`
+      }
     } else {
-      return `${discountedPrice.value.min.toLocaleString()} - ${discountedPrice.value.max.toLocaleString()} VNĐ`
+      // Không có khuyến mãi - hiển thị giá gốc
+      if (currentPrice.value.min === currentPrice.value.max) {
+        return currentPrice.value.min.toLocaleString() + ' VNĐ'
+      } else {
+        return `${currentPrice.value.min.toLocaleString()} - ${currentPrice.value.max.toLocaleString()} VNĐ`
+      }
     }
   }
 })
 
+// 3. Sửa lại computed originalPrice (giá gốc gạch ngang)
 const originalPrice = computed(() => {
-  if (!discountedPrice.value) return null
+  // Chỉ hiển thị giá gốc khi có khuyến mãi
+  if (!discountPercentage.value || discountPercentage.value <= 0 || !currentPrice.value) {
+    return null
+  }
 
   if (selectedColor.value && selectedSize.value) {
-    return currentPrice.value + ' VNĐ'
+    // Đã chọn màu và size - hiển thị giá gốc
+    return currentPrice.value.toLocaleString() + ' VNĐ'
   } else {
-    return `${product.value?.minPrice?.toLocaleString()} - ${product.value?.maxPrice?.toLocaleString()} VNĐ`
+    // Chưa chọn màu/size - hiển thị khoảng giá gốc
+    if (currentPrice.value.min === currentPrice.value.max) {
+      return currentPrice.value.min.toLocaleString() + ' VNĐ'
+    } else {
+      return `${currentPrice.value.min.toLocaleString()} - ${currentPrice.value.max.toLocaleString()} VNĐ`
+    }
   }
 })
 
@@ -184,6 +214,81 @@ const increaseQuantity = () => {
 const decreaseQuantity = () => {
   if (quantity.value > 1) {
     quantity.value--
+  }
+}
+
+// Xử lý nhập tay số lượng
+const handleQuantityInput = (event) => {
+  const inputValue = event.target.value.trim()
+  
+  // Cho phép input trống tạm thời khi đang nhập
+  if (inputValue === '') {
+    return
+  }
+  
+  const newQuantity = parseInt(inputValue)
+  
+  // Kiểm tra input hợp lệ
+  if (isNaN(newQuantity) || newQuantity < 1) {
+    toastRef.value?.showToast('Số lượng phải là số nguyên dương', 'warning')
+    return
+  }
+  
+  // Kiểm tra sản phẩm hết hàng
+  if (!isInStock.value) {
+    event.target.value = quantity.value
+    toastRef.value?.showToast('Sản phẩm này hiện đang hết hàng!', 'warning')
+    return
+  }
+  
+  // Kiểm tra tồn kho
+  if (currentVariantQuantity.value && newQuantity > currentVariantQuantity.value) {
+    toastRef.value?.showToast(`Chỉ còn ${currentVariantQuantity.value} sản phẩm trong kho!`, 'warning')
+    return
+  }
+  
+  // Cập nhật số lượng
+  quantity.value = newQuantity
+}
+
+// Xử lý khi blur khỏi input (khi người dùng hoàn thành nhập)
+const handleQuantityBlur = (event) => {
+  const inputValue = event.target.value.trim()
+  
+  // Nếu input trống, reset về giá trị hiện tại
+  if (inputValue === '') {
+    event.target.value = quantity.value
+    return
+  }
+  
+  const newQuantity = parseInt(inputValue)
+  
+  // Nếu input không hợp lệ, reset về giá trị hiện tại
+  if (isNaN(newQuantity) || newQuantity < 1) {
+    event.target.value = quantity.value
+    toastRef.value?.showToast('Số lượng không hợp lệ, đã khôi phục về giá trị cũ', 'warning')
+    return
+  }
+  
+  // Kiểm tra tồn kho và cập nhật nếu cần
+  if (currentVariantQuantity.value && newQuantity > currentVariantQuantity.value) {
+    event.target.value = currentVariantQuantity.value
+    quantity.value = currentVariantQuantity.value
+    toastRef.value?.showToast(`Số lượng đã được điều chỉnh về ${currentVariantQuantity.value} (tối đa có sẵn)`, 'info')
+  } else {
+    quantity.value = newQuantity
+  }
+}
+
+// Xử lý khi focus vào input
+const handleQuantityFocus = (event) => {
+  event.target.select() // Chọn toàn bộ text để dễ thay thế
+}
+
+// Xử lý khi nhấn Enter
+const handleQuantityKeydown = (event) => {
+  if (event.key === 'Enter') {
+    event.target.blur() // Trigger blur để validate và cập nhật
   }
 }
 
@@ -285,6 +390,31 @@ const currentVariantQuantity = computed(() => {
   return variant ? variant.quantity : 0
 })
 
+// Xử lý lỗi vượt quá tồn kho (tương tự CartView)
+const handleOutOfStockError = (err) => {
+  const status = err?.response?.status
+  const data = err?.response?.data
+  if (status === 409 && data?.error === 'OUT_OF_STOCK') {
+    const cartQuantity = Number((data.cartQuantity ?? data.carQuantity) ?? 0)
+    const allowAdd = Number(data.allowAdd ?? 0)
+    const maxQuantity = Math.max(cartQuantity + allowAdd, 0)
+
+    const msg = allowAdd <= 0
+        ? `Không thể thêm sản phẩm vào giỏ hàng. Trong giỏ hàng hiện có ${cartQuantity}.`
+        : `Không đủ hàng. Trong giỏ hàng hiện có ${cartQuantity}. Bạn chỉ có thể thêm tối đa ${allowAdd} sản phẩm nữa.`
+    toastRef.value?.showToast(msg, 'warning')
+
+    // Điều chỉnh lại số lượng người dùng đang chọn nếu cần
+    if (allowAdd <= 0) {
+      quantity.value = 1
+    } else if (quantity.value > allowAdd) {
+      quantity.value = allowAdd
+    }
+    return true
+  }
+  return false
+}
+
 // Thêm computed để kiểm tra còn hàng hay không
 const isInStock = computed(() => {
   return currentVariantQuantity.value === null || currentVariantQuantity.value > 0
@@ -333,6 +463,31 @@ const addItemToCart = async () => {
       return;
     }
 
+    // Tiền kiểm: cộng dồn với số lượng trong giỏ hàng để không vượt quá tồn kho
+    try {
+      const cartRes = await cartApi.getCartItems(userId)
+      const items = Array.isArray(cartRes?.data?.data) ? cartRes.data.data : []
+      const existingItem = items.find(i => i.productVariantId === variant.id || i.idProductVariant === variant.id)
+      const cartQuantity = Number(existingItem?.quantity ?? 0)
+      const stockQuantity = Number(currentVariantQuantity.value ?? 0)
+      const allowAdd = Math.max(stockQuantity - cartQuantity, 0)
+
+      if (allowAdd <= 0) {
+        toastRef.value?.showToast(`Không thể thêm sản phẩm. Trong giỏ đã có ${cartQuantity}, tồn kho chỉ còn ${stockQuantity}.`, 'warning')
+        quantity.value = 1
+        return
+      }
+
+      if (quantity.value > allowAdd) {
+        toastRef.value?.showToast(`Không đủ hàng. Bạn chỉ có thể thêm tối đa ${allowAdd} sản phẩm nữa.`, 'warning')
+        quantity.value = allowAdd
+        return
+      }
+    } catch (preCheckErr) {
+      // Nếu lỗi khi tiền kiểm, tiếp tục để BE kiểm tra (phòng khi API cart tạm lỗi)
+      console.warn('Pre-check cart quantity failed, fallback to server validation', preCheckErr)
+    }
+
     isAddingToCart.value = true
 
     await cartApi.addToCart({
@@ -348,6 +503,7 @@ const addItemToCart = async () => {
 
   } catch (error) {
     console.error('Error adding product to cart:', error)
+    if (handleOutOfStockError(error)) return
     toastRef.value?.showToast('Không thể thêm vào giỏ hàng. Vui lòng thử lại', 'error')
   } finally {
     isAddingToCart.value = false
@@ -544,8 +700,19 @@ function parseReplyContent(content) {
         <div class="purchase-section">
           <div class="quantity-selector">
             <button @click="decreaseQuantity" :disabled="quantity <= 1">-</button>
-            <span class="quantity">{{ quantity }}</span>
-            <button @click="increaseQuantity">+</button>
+            <input 
+              type="number" 
+              class="quantity-input"
+              :value="quantity"
+              :disabled="!isInStock"
+              min="1"
+              :max="currentVariantQuantity || 999999"
+              @input="handleQuantityInput"
+              @blur="handleQuantityBlur"
+              @focus="handleQuantityFocus"
+              @keydown="handleQuantityKeydown"
+            />
+            <button @click="increaseQuantity" :disabled="!isInStock || (currentVariantQuantity && quantity >= currentVariantQuantity)">+</button>
           </div>
           <button
               class="add-to-cart-btn"
@@ -1069,6 +1236,48 @@ function parseReplyContent(content) {
   width: 60px;
   text-align: center;
   font-weight: 500;
+}
+
+.quantity-input {
+  width: 60px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: #000;
+  font-weight: 500;
+  text-align: center;
+  font-size: 16px;
+  padding: 0 4px;
+  outline: none;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.quantity-input:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.quantity-input:focus:not(:disabled) {
+  background: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+}
+
+.quantity-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: rgba(0, 0, 0, 0.05);
+  color: #999;
+}
+
+.quantity-input::-webkit-outer-spin-button,
+.quantity-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.quantity-input[type=number] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 .add-to-cart-btn {

@@ -237,9 +237,34 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/payments/vnpay-ipn").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/payments/create-vnpay").authenticated()
                         .requestMatchers("/ws/**").permitAll()
+
+
                         .requestMatchers(base + "/chat/**").permitAll()
 
                         .requestMatchers(base + "/contact/**").permitAll()
+                        
+                        // -- Order Email APIs --
+                        .requestMatchers(HttpMethod.POST, base + "/order-email/send-success/{orderId}")
+                        .hasAnyAuthority("Customer", "Staff", "Admin")
+                        .requestMatchers(HttpMethod.POST, base + "/order-email/send-cancelled-by-user/{orderId}")
+                        .hasAnyAuthority("Customer", "Staff", "Admin")
+                        .requestMatchers(HttpMethod.POST, base + "/order-email/send-completed/{orderId}")
+                        .hasAnyAuthority("Staff", "Admin","Customer")
+                        .requestMatchers(HttpMethod.POST, base + "/order-email/send-cancelled-by-shop/{orderId}")
+                        .hasAnyAuthority("Staff", "Admin")
+                        .requestMatchers(HttpMethod.POST, base + "/order-email/send-success-to-email")
+                        .hasAuthority("Admin")
+                        .requestMatchers(HttpMethod.POST, base + "/order-email/test-simple")
+                        .hasAuthority("Admin")
+                        
+
+
+
+                        .requestMatchers(base + "/chat/**").permitAll()
+
+                        .requestMatchers(base + "/contact/**").permitAll()
+
+
                         // --- Tất cả request khác ---
                         .anyRequest().authenticated());
         http.cors(cors -> cors.configurationSource(request -> {

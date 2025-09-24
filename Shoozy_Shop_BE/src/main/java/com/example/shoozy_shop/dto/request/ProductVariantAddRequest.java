@@ -27,12 +27,10 @@ public class ProductVariantAddRequest {
     @JsonProperty("quantity")
     private Integer quantity;
 
-    @NotNull(message = "Cost price is required")
     @Min(value = 0, message = "Cost price must be >= 0")
     @JsonProperty("cost_price")
     private Double costPrice;
 
-    @NotNull(message = "Sell price is required")
     @Min(value = 0, message = "Sell price must be >= 0")
     @JsonProperty("sell_price")
     private Double sellPrice;

@@ -18,4 +18,6 @@ public class ReturnRequestResponse {
 
     private OrderSummaryDto order;
     private List<ReturnItemResponse> returnItems;
+    private RefundTransactionDto refundTransaction;
+    private RefundInfoDto refundInfo;
 }

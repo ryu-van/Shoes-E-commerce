@@ -26,8 +26,8 @@ public class ReturnItem {
 
     private int quantity;
 
-    @Column(name = "return_status")
-    private String returnStatus = "WAITING";
+    // @Column(name = "return_status")
+    // private String returnStatus = "WAITING";
 
     private String note;
 

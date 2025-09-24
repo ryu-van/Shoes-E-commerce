@@ -5,6 +5,7 @@ import com.example.shoozy_shop.dto.response.OrderResponse;
 import com.example.shoozy_shop.dto.response.OrderStatusStatisticsDto;
 import com.example.shoozy_shop.exception.CouponException;
 import com.example.shoozy_shop.exception.ForbiddenException;
+import com.example.shoozy_shop.exception.OutOfStockException;
 import com.example.shoozy_shop.exception.ResourceNotFoundException;
 import com.example.shoozy_shop.model.*;
 import com.example.shoozy_shop.repository.*;
@@ -76,7 +77,7 @@ public class OrderService implements IOrderService {
     private final ApplicationEventPublisher eventPublisher;
     private final SimpMessagingTemplate messagingTemplate;
     private final WebSocketService webSocketService;
-    private  final EventQueue eventQueue;
+    private final EventQueue eventQueue;
 
     @Override
     public List<Order> getAllOrders() {
@@ -115,15 +116,17 @@ public class OrderService implements IOrderService {
 
         // Lặp qua từng item
         for (OrderDetailRequest detailReq : orderRequest.getOrderDetails()) {
-            ProductVariant pv = productVariantRepository.findById(detailReq.getProductVariantId())
+            ProductVariant pv = productVariantRepository.findByIdForUpdate(detailReq.getProductVariantId())
                     .orElseThrow(() -> new ResourceNotFoundException("product variant", detailReq.getProductVariantId()));
 
-            int quantity = detailReq.getQuantity();
-            if (quantity > pv.getQuantity()) {
-                throw new IllegalArgumentException("Số lượng sản phẩm vượt quá tồn kho.");
+            int reqQuantity = detailReq.getQuantity();
+            int available = pv.getQuantity();
+            if (available <= 0 || reqQuantity > available) {
+                int allowAdd = Math.max(0, available);
+                throw new OutOfStockException(reqQuantity, allowAdd);
             }
 
-            pv.setQuantity(pv.getQuantity() - quantity);
+            pv.setQuantity(available - reqQuantity);
             productVariantRepository.save(pv);
 
             java.math.BigDecimal originalPrice = java.math.BigDecimal.valueOf(pv.getSellPrice()); // đơn giá 1 sp
@@ -149,14 +152,14 @@ public class OrderService implements IOrderService {
             }
 
             BigDecimal finalPricePerItem = originalPrice.subtract(promotionDiscountAmount);
-            BigDecimal lineTotal = finalPricePerItem.multiply(BigDecimal.valueOf(quantity));
+            BigDecimal lineTotal = finalPricePerItem.multiply(BigDecimal.valueOf(reqQuantity));
 
             OrderDetail od = new OrderDetail();
             od.setOrder(savedOrder);
             od.setProductVariant(pv);
             od.setPrice(originalPrice.doubleValue());
-            od.setQuantity(quantity);
-            od.setTotalMoney(originalPrice.multiply(BigDecimal.valueOf(quantity)).doubleValue());
+            od.setQuantity(reqQuantity);
+            od.setTotalMoney(originalPrice.multiply(BigDecimal.valueOf(reqQuantity)).doubleValue());
             od.setFinalPrice(lineTotal);
 
             if (promotion != null) {
@@ -264,9 +267,20 @@ public class OrderService implements IOrderService {
             }
         });
 
+        // Lấy user hiện tại từ Spring Security
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String email = authentication.getName();
+        User currentUser = userRepository.findByEmail(email)
+                .orElseThrow(() -> new ResourceNotFoundException("user", email));
+        String role = currentUser.getRole().getName();
+        OrderTimeline cancelTimeline = new OrderTimeline();
+        cancelTimeline.setOrder(savedOrder);
+        cancelTimeline.setUser(currentUser);
+        cancelTimeline.setType("ORDER_CREATED");
+        cancelTimeline.setDescription("Đơn hàng đã được tạo bởi " + role.toLowerCase() + ".");
+        cancelTimeline.setCreateDate(LocalDateTime.now());
         return savedOrder;
     }
-
 
 
     private String generateUniqueOrderCode() {

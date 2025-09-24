@@ -2,18 +2,17 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getReturnDetail } from '@/service/ReturnApis'
-
-// 👉 Ảnh fallback nếu sản phẩm không có ảnh hoặc ảnh hỏng
 import noImage from '@/assets/img/no-image.png'
 
 const router = useRouter()
-const goBack = () => router.back()
-
 const route = useRoute()
+
 const returnRequest = ref(null)
 const loading = ref(true)
 
-// ——— Helpers ———
+const goBack = () => router.back()
+
+// Helpers
 function formatDate(dateString) {
   const d = new Date(dateString)
   return d.toLocaleDateString('vi-VN')
@@ -46,44 +45,18 @@ function getStatusClass(status) {
   }
 }
 
-// Sự kiện khi ảnh lỗi -> set fallback
 function onImgError(e) {
   e.target.src = noImage
 }
 
-// ——— Fetch + Enrich ———
+// Fetch
 onMounted(async () => {
   try {
     const res = await getReturnDetail(route.params.id)
-    const raw = res.data?.data || res.data
-
-    // Làm giàu: nối returnItems với orderDetails để lấy ảnh/tên sản phẩm gốc
-    const details = raw?.order?.orderDetails || []
-
-    const byOrderDetailId = new Map(
-      details.map(d => [(d?.id ?? d?.orderDetailId), d])
-    )
-    const byVariantId = new Map(
-      details.map(d => [d?.productVariantId, d])
-    )
-
-    const enrichedItems = (raw?.returnItems || []).map(ri => {
-      const matched =
-        byOrderDetailId.get(ri?.orderDetailId) ||
-        byVariantId.get(ri?.productVariantId) ||
-        null
-
-      return {
-        ...ri,
-        __thumb: matched?.thumbnail || null,
-        __name: matched?.productName || ri?.productName || 'Sản phẩm',
-        __variantText: matched ? `${matched.color ?? ''}${matched.size ? ` - Size ${matched.size}` : ''}`.trim() : ''
-      }
-    })
-
-    returnRequest.value = { ...raw, returnItems: enrichedItems }
+    returnRequest.value = res.data?.data || res.data
   } catch (err) {
-    console.error('Lỗi khi lấy chi tiết trả hàng:', err)
+    console.error('❌ Lỗi khi lấy chi tiết trả hàng:', err)
+    returnRequest.value = null
   } finally {
     loading.value = false
   }
@@ -96,6 +69,7 @@ onMounted(async () => {
       <button class="btn btn-outline-secondary" @click="goBack">← Quay lại</button>
     </div>
 
+    <!-- Loading -->
     <div v-if="loading" class="text-center my-5">
       <div class="spinner-border text-primary" role="status">
         <span class="visually-hidden">Đang tải...</span>
@@ -103,6 +77,7 @@ onMounted(async () => {
       <p class="mt-2">Đang tải chi tiết trả hàng...</p>
     </div>
 
+    <!-- Found -->
     <div v-else-if="returnRequest" class="card p-4 shadow-sm">
       <h3 class="mb-3">Chi tiết yêu cầu trả hàng #{{ returnRequest.id }}</h3>
 
@@ -118,15 +93,19 @@ onMounted(async () => {
             {{ getStatusText(returnRequest.status) }}
           </span>
         </p>
-
+        <p>
+          <strong>Số tiền hoàn dự kiến:</strong>
+          {{ returnRequest.refundAmount?.toLocaleString('vi-VN') || 0 }} đ
+        </p>
         <p v-if="returnRequest.returnItems?.length > 1">
           <strong>Lý do chung:</strong> {{ returnRequest.reason || '—' }}
         </p>
         <p v-if="returnRequest.note">
           <strong>Ghi chú thêm:</strong> {{ returnRequest.note }}
         </p>
-
-        <p><strong>Ngày tạo:</strong> {{ formatDate(returnRequest.createdAt) }}</p>
+        <p>
+          <strong>Ngày tạo:</strong> {{ formatDate(returnRequest.createdAt) }}
+        </p>
       </div>
 
       <!-- Danh sách sản phẩm -->
@@ -136,25 +115,14 @@ onMounted(async () => {
         :key="item.id"
         class="border rounded p-3 mb-3 product-row d-flex align-items-center gap-3"
       >
-        <!-- Ảnh đại diện: Ảnh sản phẩm gốc -->
-        <img
-          :src="item.__thumb || noImage"
-          :alt="item.__name"
-          class="thumb rounded border"
-          @error="onImgError"
-        />
 
         <div class="flex-grow-1">
-          <div class="d-flex align-items-center justify-content-between flex-wrap">
-            <!-- Tên + biến thể + số lượng -->
-            <h6 class="mb-1">
-              {{ item.__name }}
-              <small class="text-muted ms-1" v-if="item.__variantText">({{ item.__variantText }})</small>
-              <small class="text-muted ms-1">(x{{ item.quantity }})</small>
-            </h6>
-          </div>
+          <h6 class="mb-1">
+            {{ item.productName }}
+            <small class="text-muted ms-1">(x{{ item.quantity }})</small>
+          </h6>
 
-          <!-- Lý do riêng / chung -->
+          <!-- Lý do -->
           <p class="mb-2 small text-muted" v-if="returnRequest.returnItems.length === 1">
             <strong>Lý do trả hàng:</strong> {{ item.note || 'Không có' }}
           </p>
@@ -162,7 +130,7 @@ onMounted(async () => {
             <strong>Lý do riêng:</strong> {{ item.note || 'Không có' }}
           </p>
 
-          <!-- Ảnh minh họa người dùng upload -->
+          <!-- Ảnh minh họa -->
           <div v-if="Array.isArray(item.imageUrls) && item.imageUrls.length" class="d-flex flex-wrap gap-2 mt-1">
             <img
               v-for="(url, i) in item.imageUrls"
@@ -177,6 +145,7 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- Not found -->
     <div v-else class="alert alert-danger">Không tìm thấy dữ liệu yêu cầu trả hàng.</div>
   </div>
 </template>

@@ -2,6 +2,7 @@ package com.example.shoozy_shop.controller;
 
 import com.example.shoozy_shop.dto.request.UpdateReturnStatusRequest;
 import com.example.shoozy_shop.dto.response.ReturnRequestResponse;
+import com.example.shoozy_shop.enums.ReturnStatus;
 import com.example.shoozy_shop.exception.ApiResponse;
 import com.example.shoozy_shop.service.ReturnService;
 
@@ -41,13 +42,27 @@ public class AdminReturnRequestController {
         return ResponseEntity.ok(ApiResponse.success("Lấy chi tiết yêu cầu trả hàng thành công", response));
     }
 
+    // com/example/shoozy_shop/controller/AdminReturnRequestController.java
     @PostMapping("/update-status")
     public ResponseEntity<ApiResponse<?>> updateReturnStatus(
             @RequestBody @Valid UpdateReturnStatusRequest requestDto) {
 
-        returnService.updateStatus(requestDto.getReturnRequestId(), requestDto.getStatus().name());
+        if (requestDto.getStatus() == ReturnStatus.REFUNDED) {
+            // gọi overload mới – hiện thời chỉ chuyển tiếp, Bước 4 sẽ thêm xử lý hoàn tiền
+            // thật
+            returnService.updateStatus(
+                    requestDto.getReturnRequestId(),
+                    requestDto.getStatus(),
+                    requestDto.getRefundMethod(),
+                    requestDto.getReferenceCode(),
+                    requestDto.getRefundNote());
+        } else {
+            // giữ nguyên cho các status khác
+            returnService.updateStatus(requestDto.getReturnRequestId(), requestDto.getStatus().name());
+        }
 
-        return ResponseEntity.ok(ApiResponse.success("Cập nhật trạng thái yêu cầu trả hàng thành công", null));
+        return ResponseEntity.ok(ApiResponse.success(
+                "Cập nhật trạng thái yêu cầu trả hàng thành công", null));
     }
 
 }

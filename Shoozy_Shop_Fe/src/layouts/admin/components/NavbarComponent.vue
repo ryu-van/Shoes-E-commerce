@@ -14,8 +14,8 @@ const userProfile = ref(null);
 
 // Thêm notification mới
 const addNotification = (data) => {
-  console.log('Raw WebSocket data:', data)
   const { payload: order, action } = data
+  console.log('Data:', data)
   console.log('Order notification received:', order, action)
   // Bỏ qua update action
   if (action === 'ORDER_UPDATED_STATUS') return
@@ -45,7 +45,7 @@ const addNotification = (data) => {
     }),
     avatar: order.user?.avatar || null,
     phone: order.phoneNumber || '',
-    orderValue: order.totalMoney || 0,
+    orderValue: order.totalMoney,
     orderCode: order.orderCode || '',
     address: order.address || '',
     status: order.status || '',
@@ -121,7 +121,7 @@ const showDesktopNotification = (notification) => {
   if ('Notification' in window && Notification.permission === 'granted') {
     const desktopNotification = new Notification('Đơn hàng mới!', {
       body: `${notification.user} vừa đặt đơn hàng ${notification.orderCode}`,
-      icon: notification.avatar || '/favicon.ico',
+      icon: notification.avatar,
       tag: notification.orderCode,
       requireInteraction: true
     })
@@ -172,10 +172,9 @@ const showToast = (notification) => {
   toast.innerHTML = `
     <div class="toast-content">
       <div class="d-flex align-items-center">
-        <img src="${notification.avatar || '/favicon.ico'}"
+        <img src="${notification.avatar}"
              alt="Avatar"
-             class="toast-avatar me-3"
-             onerror="this.src='/favicon.ico'">
+             class="toast-avatar me-3"">
         <div>
           <strong class="d-block">${notification.user}</strong>
           <small class="text-muted">${notification.message}</small>

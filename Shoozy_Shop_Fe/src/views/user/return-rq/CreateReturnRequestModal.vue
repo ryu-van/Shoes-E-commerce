@@ -4,11 +4,11 @@ import { createReturnRequest, uploadReturnImages } from '@/service/ReturnApis'
 import ShowToastComponent from '@/components/ShowToastComponent.vue'
 
 const props = defineProps({ order: Object, items: Array })
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close','submitted'])
 
 const MAX_IMAGES = 5
 
-const reason = ref('')   // lý do chung (bắt buộc nếu >= 2 sp)
+const reason = ref('')
 const note   = ref('')
 const loading = ref(false)
 const toastRef = ref(null)
@@ -16,6 +16,96 @@ const uploadingImagesCount = ref(0)
 
 const selectedItems = ref([])
 
+// ==== Refund info + errors ====
+const refund = ref({
+  method: 'BANK_TRANSFER',
+  bankName: '',
+  accountNumber: '',
+  accountHolder: '',
+  walletProvider: '',
+  walletAccount: ''
+})
+
+// 👉 Nâng cấp error: có cả message
+const errors = ref({
+  bankName: false,
+  accountNumber: false,
+  accountHolder: false,
+  walletProvider: false,
+  walletAccount: false,
+})
+const errorMsgs = ref({
+  bankName: '',
+  accountNumber: '',
+  accountHolder: '',
+  walletProvider: '',
+  walletAccount: '',
+})
+function resetErrors () {
+  errors.value = {
+    bankName: false,
+    accountNumber: false,
+    accountHolder: false,
+    walletProvider: false,
+    walletAccount: false
+  }
+  errorMsgs.value = {
+    bankName: '',
+    accountNumber: '',
+    accountHolder: '',
+    walletProvider: '',
+    walletAccount: '',
+  }
+}
+
+/** ===========================
+ * Regex & helpers cho refund
+ * =========================== */
+const NAME_RE        = /^[\p{L}\p{M}\s'.-]{2,60}$/u
+const BANK_RE        = /^[\p{L}\p{M}\s'.-]{2,60}$/u
+const ACCOUNT_NO_RE  = /^\d{6,20}$/
+const PHONE_RE       = /^0\d{9,10}$/
+const EMAIL_RE       = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
+function validateRefundLive() {
+  resetErrors()
+  if (refund.value.method === 'BANK_TRANSFER') {
+    const bn = (refund.value.bankName || '').trim()
+    const an = (refund.value.accountNumber || '').trim()
+    const ah = (refund.value.accountHolder || '').trim()
+    if (!bn || !BANK_RE.test(bn)) {
+      errors.value.bankName = true
+      errorMsgs.value.bankName = bn ? 'Tên ngân hàng không hợp lệ.' : 'Không được để trống.'
+    }
+    if (!an || !ACCOUNT_NO_RE.test(an)) {
+      errors.value.accountNumber = true
+      errorMsgs.value.accountNumber = an ? 'Số tài khoản chỉ gồm 6–20 chữ số.' : 'Không được để trống.'
+    }
+    if (!ah || !NAME_RE.test(ah)) {
+      errors.value.accountHolder = true
+      errorMsgs.value.accountHolder = ah ? 'Tên chủ tài khoản không hợp lệ.' : 'Không được để trống.'
+    }
+  } else if (refund.value.method === 'EWALLET') {
+    const wp = (refund.value.walletProvider || '').trim()
+    const wa = (refund.value.walletAccount || '').trim()
+    if (!wp || !NAME_RE.test(wp)) {
+      errors.value.walletProvider = true
+      errorMsgs.value.walletProvider = wp ? 'Tên ví không hợp lệ.' : 'Không được để trống.'
+    }
+    if (!wa || !(PHONE_RE.test(wa) || EMAIL_RE.test(wa))) {
+      errors.value.walletAccount = true
+      errorMsgs.value.walletAccount = wa ? 'Tài khoản ví phải là SĐT (bắt đầu 0, 10–11 số) hoặc Email hợp lệ.' : 'Không được để trống.'
+    }
+  }
+}
+
+// Validate theo thời gian thực khi đổi phương thức/nhập dữ liệu
+watch(() => refund.value.method, validateRefundLive)
+watch(refund, validateRefundLive, { deep: true })
+
+/** ================================
+ * Khởi tạo item + error từng hàng
+ * ================================ */
 watch(
   () => props.items,
   (newItems) => {
@@ -29,9 +119,12 @@ watch(
         thumbnail     : item.thumbnail,
         isSelected    : true,
         returnQuantity: 1,
-        itemNote      : '',           // lý do riêng (bắt buộc)
-        imageUrls     : [],           // ảnh đã upload (URL thật)
-        imagePreviews : []            // preview đang chờ upload
+        itemNote      : '',
+        imageUrls     : [],
+        imagePreviews : [],
+        // 👉 lỗi số lượng
+        qtyError      : '',
+         imgError      : '',
       }))
     }
   },
@@ -39,13 +132,88 @@ watch(
 )
 
 const close = () => emit('close')
+function validateItemImages(item) {
+  // yêu cầu: phải có ít nhất 1 ảnh đã upload thành công
+  const countUploaded = (item.imageUrls?.length || 0)
+  if (countUploaded < 1) {
+    item.imgError = 'Vui lòng thêm ít nhất 1 ảnh minh chứng cho sản phẩm này.'
+    return false
+  }
+  item.imgError = ''
+  return true
+}
 
-// còn được thêm bao nhiêu ảnh nữa?
+/** =========================================
+ * Validate số lượng: khóa cứng 1..max khi gõ
+ * ========================================= */
+function clampInt(n, min, max) {
+  if (Number.isNaN(n)) return min
+  n = Math.trunc(n)
+  if (n < min) n = min
+  if (n > max) n = max
+  return n
+}
+
+// Dự đoán chuỗi nếu thao tác chèn xảy ra
+function buildNextValue(el, insertText) {
+  const start = el.selectionStart ?? el.value.length
+  const end   = el.selectionEnd ?? el.value.length
+  const left  = el.value.slice(0, start)
+  const right = el.value.slice(end)
+  return left + (insertText ?? '') + right
+}
+
+// Chặn ngay ở trước khi input nếu vượt min/max hoặc không phải số
+function onQtyBeforeInput(item, e) {
+  const t = e.target
+  const type = e.inputType
+
+  // Cho phép delete/backspace
+  if (type?.startsWith('delete')) return
+
+  const insert = e.data ?? (e.clipboardData?.getData('text') ?? '')
+  if (!/^\d+$/.test(insert)) { e.preventDefault(); return }
+
+  let next = buildNextValue(t, insert).replace(/\D+/g, '')
+  if (next === '') return // cho phép để trống tạm thời
+
+  next = String(Number(next)) // bỏ 0 đầu
+  const max = Number(item.quantity || 1)
+  const n = Number(next)
+
+  if (!Number.isFinite(n) || n < 1 || n > max) {
+    e.preventDefault()
+    item.qtyError = n > max ? `Tối đa ${max}.` : 'Tối thiểu là 1.'
+  }
+}
+
+// Sau khi input: normalize và đồng bộ model
+function onQtyAfterInput(item, e) {
+  let v = String(e.target.value || '').replace(/\D+/g, '')
+  if (v === '') { item.returnQuantity = ''; return }
+  v = String(Number(v))
+  const max = Number(item.quantity || 1)
+  let n = Number(v)
+  if (n < 1) n = 1
+  if (n > max) n = max
+  e.target.value = String(n)
+  item.returnQuantity = n
+  item.qtyError = ''
+}
+
+// Ràng buộc lần cuối khi blur (phòng hờ)
+function onQuantityBlur(item) {
+  const max = Number(item.quantity || 1)
+  const n = clampInt(Number(item.returnQuantity), 1, max)
+  item.returnQuantity = n
+  item.qtyError = ''
+}
+
+/** ============== Ảnh (giữ nguyên) ============== */
 const remainSlots = (item) =>
   MAX_IMAGES - ((item.imageUrls?.length || 0) + (item.imagePreviews?.length || 0))
 const canAddMore = (item) => remainSlots(item) > 0
 
-// Upload nhiều ảnh 1 lần (batch)
 const handleImageUpload = async (event, item) => {
   const picked = Array.from(event.target.files || [])
   if (!picked.length) return
@@ -57,27 +225,23 @@ const handleImageUpload = async (event, item) => {
     return
   }
 
-  // chỉ lấy vừa đủ slot
   const toSend = picked.slice(0, room)
   if (picked.length > toSend.length) {
     toastRef.value?.showToast(`Chỉ thêm được ${room} ảnh nữa (tối đa ${MAX_IMAGES}).`, 'info')
   }
 
-  // thêm preview tạm
   const newPreviews = toSend.map(f => URL.createObjectURL(f))
   item.imagePreviews.push(...newPreviews)
 
   uploadingImagesCount.value++
   try {
-    const res = await uploadReturnImages(toSend) // trả về mảng URL
+    const res = await uploadReturnImages(toSend)
     const urls = res?.data?.data || []
-
-    // xoá đúng số preview vừa thêm (ở cuối) rồi thay bằng URL thật
     item.imagePreviews.splice(item.imagePreviews.length - newPreviews.length, newPreviews.length)
     item.imageUrls.push(...urls)
+    validateItemImages(item)
   } catch (err) {
     console.error(err)
-    // rollback preview đã thêm nếu upload lỗi
     item.imagePreviews.splice(item.imagePreviews.length - newPreviews.length, newPreviews.length)
     toastRef.value?.showToast(
       err?.response?.data?.message ||
@@ -86,79 +250,107 @@ const handleImageUpload = async (event, item) => {
     )
   } finally {
     uploadingImagesCount.value--
-    event.target.value = '' // reset input
+    event.target.value = ''
   }
 }
 
-const removeUploaded = (item, index) => {  // xoá ảnh đã upload
+const removeUploaded = (item, index) => {
   item.imageUrls.splice(index, 1)
+  validateItemImages(item)
 }
-const removePreview = (item, index) => {   // xoá preview đang chờ
+const removePreview  = (item, index) => {
   item.imagePreviews.splice(index, 1)
+  // Preview chỉ là tạm, nhưng xóa vẫn có thể nhắc lại cho rõ
+  validateItemImages(item)
 }
+
 
 const selectedCount = computed(() =>
   selectedItems.value
     .filter(i => i.isSelected)
-    .reduce((sum, i) => sum + (i.returnQuantity || 0), 0)
+    .reduce((sum, i) => sum + (Number(i.returnQuantity) || 0), 0)
 )
 
+// Nút +/- đảm bảo clamp
+const adjustQuantity = (item, delta) => {
+  const max = Number(item.quantity || 1)
+  const next = clampInt(Number(item.returnQuantity || 0) + delta, 1, max)
+  item.returnQuantity = next
+  item.qtyError = ''
+}
+
+/** ============== Submit (bổ sung check lỗi) ============== */
 const submit = async () => {
   if (uploadingImagesCount.value > 0) {
     toastRef.value?.showToast('Vui lòng chờ ảnh tải lên xong rồi mới gửi yêu cầu.', 'warning')
     return
   }
 
-  // Lý do chung bắt buộc khi trả >= 2 sản phẩm
   if (selectedCount.value >= 2 && !reason.value.trim()) {
     toastRef.value?.showToast('Vui lòng nhập lý do chung khi trả nhiều sản phẩm.', 'error')
     return
   }
 
-  loading.value = true
-  try {
-    const items = []
+  // Live-validate refund
+  validateRefundLive()
+  if (Object.values(errors.value).some(Boolean)) {
+    toastRef.value?.showToast('Thông tin nhận tiền hoàn chưa hợp lệ. Vui lòng kiểm tra lại.', 'error')
+    return
+  }
 
-    for (const item of selectedItems.value) {
-      if (!item.isSelected) continue
+  const items = []
+  for (const item of selectedItems.value) {
+    if (!item.isSelected) continue
 
-      const qty = Number(item.returnQuantity || 0)
-      if (qty < 1 || qty > item.quantity) {
-        toastRef.value?.showToast(`Số lượng trả không hợp lệ cho "${item.productName}".`, 'warning')
-        loading.value = false
-        return
-      }
-
-      const perItemReason = (item.itemNote || '').trim()
-      if (!perItemReason) {
-        toastRef.value?.showToast(`Vui lòng nhập lý do cho sản phẩm "${item.productName}".`, 'error')
-        loading.value = false
-        return
-      }
-
-      items.push({
-        orderDetailId: item.orderDetailId,
-        quantity     : qty,
-        note         : perItemReason,
-        imageUrls    : (item.imageUrls || []).slice(0, MAX_IMAGES) // phòng hờ
-      })
-    }
-
-    if (!items.length) {
-      toastRef.value?.showToast('Bạn chưa chọn sản phẩm nào để trả hàng.', 'warning')
+    const qty = Number(item.returnQuantity || 0)
+    if (!Number.isInteger(qty) || qty < 1 || qty > item.quantity) {
+      item.qtyError = `Số lượng phải từ 1 đến ${item.quantity}.`
+      toastRef.value?.showToast(`Số lượng trả không hợp lệ cho "${item.productName}".`, 'warning')
       return
     }
 
-    const payload = {
-      orderId: props.order.id,
-      reason : selectedCount.value >= 2 ? reason.value.trim() : '',
-      note   : selectedCount.value >= 2 ? (note.value || '').trim() : '',
-      items
-    }
+    const perItemReason = (item.itemNote || '').trim()
+    if (!perItemReason) {
+      toastRef.value?.showToast(`Vui lòng nhập lý do cho sản phẩm "${item.productName}".`, 'error')
+      return
+    }  if (!validateItemImages(item)) {
+    toastRef.value?.showToast(`"${item.productName}" cần ít nhất 1 ảnh minh chứng.`, 'error')
+    return
+  }
 
+  items.push({
+    orderDetailId: item.orderDetailId,
+    quantity     : qty,
+    note         : perItemReason,
+    imageUrls    : (item.imageUrls || []).slice(0, MAX_IMAGES)
+  })
+
+  }
+
+  if (!items.length) {
+    toastRef.value?.showToast('Bạn chưa chọn sản phẩm nào để trả hàng.', 'warning')
+    return
+  }
+
+  const payload = {
+    orderId: props.order.id,
+    reason : selectedCount.value >= 2 ? reason.value.trim() : '',
+    note   : selectedCount.value >= 2 ? (note.value || '').trim() : '',
+    items,
+    refundInfo: {
+      method: refund.value.method,
+      bankName: refund.value.bankName || null,
+      accountNumber: refund.value.accountNumber || null,
+      accountHolder: refund.value.accountHolder || null,
+      walletProvider: refund.value.walletProvider || null,
+      walletAccount: refund.value.walletAccount || null
+    }
+  }
+
+  loading.value = true
+  try {
     await createReturnRequest(payload)
     toastRef.value?.showToast('Tạo yêu cầu trả hàng thành công!', 'success')
-
     setTimeout(() => {
       reason.value = ''
       note.value = ''
@@ -171,13 +363,14 @@ const submit = async () => {
   } finally {
     loading.value = false
   }
-}
-
-const adjustQuantity = (item, delta) => {
-  const next = Number(item.returnQuantity || 0) + delta
-  if (next >= 1 && next <= item.quantity) item.returnQuantity = next
+  emit('submitted', { 
+  orderId: props.order.id, 
+  // nếu BE có trả về số còn trả được thì gửi kèm, không có thì bỏ
+  remainingCount: resp?.data?.data?.remainingCount 
+})
 }
 </script>
+
 
 <template>
   <div class="modal-overlay" @click.self="close">
@@ -219,29 +412,35 @@ const adjustQuantity = (item, delta) => {
 
             <div v-if="item.isSelected" class="item-return-form">
               <div class="form-grid">
-                <div class="form-group">
-                  <label :for="'qty-' + item.orderDetailId">Số lượng trả</label>
-                  <div class="quantity-control">
-                    <button @click="adjustQuantity(item, -1)">-</button>
-                    <input 
-  :id="'qty-' + item.orderDetailId" 
-  type="number" 
-  min="1" 
-  :max="item.quantity" 
-  v-model.number="item.returnQuantity"
-  @input="
-    item.returnQuantity = 
-      item.returnQuantity > item.quantity 
-        ? item.quantity 
-        : item.returnQuantity < 1 
-          ? 1 
-          : item.returnQuantity
-  "
+               <div class="form-group">
+  <label :for="'qty-' + item.orderDetailId">Số lượng trả</label>
+  <div class="quantity-control">
+    <button @click="adjustQuantity(item, -1)">-</button>
+
+   <input
+  :id="'qty-' + item.orderDetailId"
+  type="text"
+  inputmode="numeric"
+  pattern="\d*"
+  :class="{ 'is-invalid': !!item.qtyError }"
+  :value="item.returnQuantity"
+  :maxlength="String(item.quantity).length"
+  @beforeinput="(e) => onQtyBeforeInput(item, e)"
+  @input="(e) => onQtyAfterInput(item, e)"
+  @blur="() => onQuantityBlur(item)"
+  aria-describedby="'qty-err-' + item.orderDetailId"
 />
 
-                    <button @click="adjustQuantity(item, 1)">+</button>
-                  </div>
-                </div>
+
+    <button @click="adjustQuantity(item, 1)">+</button>
+  </div>
+  <small
+    v-if="item.qtyError"
+    class="invalid-msg"
+    :id="'qty-err-' + item.orderDetailId"
+  >{{ item.qtyError }}</small>
+</div>
+
 
                 <div class="form-group reason-group">
                   <label :for="'reason-' + item.orderDetailId">Lý do trả hàng (bắt buộc)</label>
@@ -257,13 +456,11 @@ const adjustQuantity = (item, delta) => {
                   </div>
 
                   <div class="preview-images">
-                    <!-- Ảnh đã upload -->
                     <div v-for="(url, i) in item.imageUrls" :key="'u'+i" class="preview-thumb-wrapper">
                       <img :src="url" class="preview-thumb" alt="Ảnh đã upload" />
                       <button class="remove-image-btn" @click="removeUploaded(item, i)">×</button>
                     </div>
 
-                    <!-- Preview đang chờ -->
                     <div v-for="(img, i) in item.imagePreviews" :key="'p'+i" class="preview-thumb-wrapper">
                       <img :src="img" class="preview-thumb" alt="Đang tải..." />
                       <button class="remove-image-btn" @click="removePreview(item, i)">×</button>
@@ -275,6 +472,7 @@ const adjustQuantity = (item, delta) => {
                     <span>+ Thêm ảnh</span>
                   </label>
                 </div>
+                <small v-if="item.imgError" class="invalid-msg">{{ item.imgError }}</small>
 
                 <div v-if="uploadingImagesCount > 0" class="uploading-note">
                   <svg width="16" height="16" viewBox="0 0 24 24">
@@ -286,6 +484,88 @@ const adjustQuantity = (item, delta) => {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Refund info -->
+        <div class="card p-3 mt-3">
+          <h5>Thông tin nhận tiền hoàn</h5>
+
+          <div class="mb-2">
+            <label class="form-label">Phương thức</label>
+            <select v-model="refund.method" class="form-select">
+              <option value="BANK_TRANSFER">Chuyển khoản ngân hàng</option>
+              <option value="EWALLET">Ví điện tử</option>
+              <option value="CASH">Tiền mặt</option>
+            </select>
+          </div>
+
+          <!-- BANK_TRANSFER -->
+<div v-if="refund.method === 'BANK_TRANSFER'" class="row g-2">
+  <div class="col-md-4">
+    <label class="form-label">Ngân hàng</label>
+    <input
+      v-model.trim="refund.bankName"
+      class="form-control"
+      :class="{ 'is-invalid': errors.bankName }"
+      placeholder="Vietcombank..."
+    />
+    <small v-if="errors.bankName" class="invalid-msg">{{ errorMsgs.bankName }}</small>
+  </div>
+  <div class="col-md-4">
+    <label class="form-label">Số tài khoản</label>
+    <input
+      v-model.trim="refund.accountNumber"
+      class="form-control"
+      :class="{ 'is-invalid': errors.accountNumber }"
+      placeholder="0123456789"
+      inputmode="numeric"
+      pattern="\d*"
+      @keypress="onlyDigitsKeypress"
+      @paste="digitsOnPaste"
+    />
+    <small v-if="errors.accountNumber" class="invalid-msg">{{ errorMsgs.accountNumber }}</small>
+  </div>
+  <div class="col-md-4">
+    <label class="form-label">Chủ tài khoản</label>
+    <input
+      v-model.trim="refund.accountHolder"
+      class="form-control"
+      :class="{ 'is-invalid': errors.accountHolder }"
+      placeholder="Nguyễn Văn A"
+    />
+    <small v-if="errors.accountHolder" class="invalid-msg">{{ errorMsgs.accountHolder }}</small>
+  </div>
+</div>
+
+<!-- EWALLET -->
+<div v-else-if="refund.method === 'EWALLET'" class="row g-2">
+  <div class="col-md-4">
+    <label class="form-label">Ví</label>
+    <input
+      v-model.trim="refund.walletProvider"
+      class="form-control"
+      :class="{ 'is-invalid': errors.walletProvider }"
+      placeholder="MoMo / ZaloPay..."
+    />
+    <small v-if="errors.walletProvider" class="invalid-msg">{{ errorMsgs.walletProvider }}</small>
+  </div>
+  <div class="col-md-4">
+    <label class="form-label">Tài khoản ví (SĐT/Email)</label>
+    <input
+      v-model.trim="refund.walletAccount"
+      class="form-control"
+      :class="{ 'is-invalid': errors.walletAccount }"
+      placeholder="09xxx / email@..."
+      @blur="validateRefundLive"
+    />
+    <small v-if="errors.walletAccount" class="invalid-msg">{{ errorMsgs.walletAccount }}</small>
+  </div>
+</div>
+
+
+          <div v-else class="text-muted">
+            Tiền mặt: bạn sẽ nhận tại quầy / khi shipper thu hồi hàng (tuỳ chính sách).
           </div>
         </div>
       </div>
@@ -303,6 +583,16 @@ const adjustQuantity = (item, delta) => {
 </template>
 
 <style scoped>
+.image-upload-area.has-error {
+  border: 1px solid #dc3545; /* đỏ */
+  border-radius: 6px;
+  padding: 8px;
+}
+.invalid-msg {
+  color: #dc3545;
+  font-size: 12px;
+}
+
 .upload-btn-label.disabled { opacity: .6; pointer-events: none; }
 
 /* Modal Layout */
@@ -373,4 +663,8 @@ const adjustQuantity = (item, delta) => {
 .btn-primary:hover:not(:disabled){ background:#0056b3; }
 .btn-secondary { background:#fff; border:1px solid var(--border-color); color:var(--text-color); }
 .btn-secondary:hover:not(:disabled){ background:#f8f9fa; }
+
+/* Invalid state */
+.is-invalid { border-color:#dc3545 !important; }
+.invalid-msg { color:#dc3545; font-size:12px; margin-top:4px; display:block; }
 </style>

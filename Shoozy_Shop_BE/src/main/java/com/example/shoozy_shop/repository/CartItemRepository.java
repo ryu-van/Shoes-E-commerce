@@ -23,6 +23,7 @@ public interface CartItemRepository extends JpaRepository<CartItem, Long> {
     @Query("""
                 SELECT new com.example.shoozy_shop.dto.response.ProductCartResponse(
                     ci.id,
+                    p.id,
                     p.name,
                     pv.thumbnail,
                     pv.sellPrice,
@@ -49,7 +50,7 @@ public interface CartItemRepository extends JpaRepository<CartItem, Long> {
                       )
                 GROUP BY
                     ci.id, p.name, pv.thumbnail, pv.sellPrice,
-                    s.value, c.name, ci.quantity, pv.quantity
+                    s.value, c.name, ci.quantity, pv.quantity,p.id
             """)
     List<ProductCartResponse> findCartItemsByCartId(@Param("cartId") Long cartId);
 

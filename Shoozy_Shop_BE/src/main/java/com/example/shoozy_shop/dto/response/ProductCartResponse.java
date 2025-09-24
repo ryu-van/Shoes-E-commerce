@@ -7,6 +7,7 @@ import lombok.*;
 @NoArgsConstructor
 public class ProductCartResponse {
   private Long idCartItem;
+  private Long idProductVariant;
   private String productName;
   private String productImage;
   private Double price;
@@ -16,11 +17,11 @@ public class ProductCartResponse {
   private Integer quantity;
   private Integer availableQuantity;
 
-  // Khuyến nghị: viết constructor tay cho chắc ăn (khớp 100% với JPQL)
-  public ProductCartResponse(Long idCartItem, String productName, String productImage,
+  public ProductCartResponse(Long idCartItem,Long idProductVariant, String productName, String productImage,
                              Double price, Double discountPercent, Integer size, String color,
                              Integer quantity, Integer availableQuantity) {
     this.idCartItem = idCartItem;
+    this.idProductVariant = idProductVariant;
     this.productName = productName;
     this.productImage = productImage;
     this.price = price;

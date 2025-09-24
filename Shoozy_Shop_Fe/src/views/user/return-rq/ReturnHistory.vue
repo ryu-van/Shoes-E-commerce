@@ -1,9 +1,8 @@
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { getAllReturnsByUser } from '@/service/ReturnApis'
 import noImage from '@/assets/img/no-image.png'
 
-// ✅ nhận query từ OrderManagement
 const props = defineProps({
   query: { type: String, default: '' }
 })
@@ -11,19 +10,17 @@ const props = defineProps({
 const returnRequests = ref([])
 const loading = ref(true)
 
-// Mapping trạng thái sang tiếng Việt
 const statusLabels = {
-  pending: 'Đang chờ duyệt',
-  approved: 'Đã chấp nhận',
-  rejected: 'Bị từ chối',
-  wait_for_pickup: 'Chờ lấy hàng',
-  returned: 'Đã trả hàng',
-  refunded: 'Đã hoàn tiền',
-  cancelled: 'Đã hủy',
-  completed: 'Hoàn tất',
+  PENDING: 'Đang chờ duyệt',
+  APPROVED: 'Đã chấp nhận',
+  REJECTED: 'Bị từ chối',
+  WAIT_FOR_PICKUP: 'Chờ lấy hàng',
+  RETURNED: 'Đã trả hàng',
+  REFUNDED: 'Đã hoàn tiền',
+  CANCELLED: 'Đã hủy',
+  COMPLETED: 'Hoàn tất'
 }
 
-// --- Hàm debounce mini (tránh gọi API liên tục khi gõ search)
 function debounce(fn, wait = 300) {
   let t
   return (...args) => {
@@ -32,56 +29,22 @@ function debounce(fn, wait = 300) {
   }
 }
 
-// --- gọi API
 async function fetchReturns() {
   loading.value = true
   try {
     const res = await getAllReturnsByUser(props.query)
-    const raw = res?.data?.data ?? []
-
-    returnRequests.value = raw.map(req => {
-      const details = req?.order?.orderDetails || []
-
-      const byOrderDetailId = new Map(
-        details.map(d => [(d?.id ?? d?.orderDetailId), d])
-      )
-      const byVariantId = new Map(
-        details.map(d => [d?.productVariantId, d])
-      )
-
-      const enrichedItems = (req.returnItems || []).map(ri => {
-        const matched =
-          byOrderDetailId.get(ri?.orderDetailId) ||
-          byVariantId.get(ri?.productVariantId) ||
-          null
-
-        return {
-          ...ri,
-          __thumb: matched?.thumbnail || null,
-          __name: matched?.productName || ri?.productName || 'Sản phẩm',
-        }
-      })
-
-      return { ...req, returnItems: enrichedItems }
-    })
+    returnRequests.value = res?.data?.data ?? []
   } catch (err) {
-    console.error('Lỗi khi tải lịch sử trả hàng:', err)
+    console.error('❌ Lỗi khi tải lịch sử trả hàng:', err)
   } finally {
     loading.value = false
   }
 }
 
-// --- gọi API lần đầu
 onMounted(fetchReturns)
 
-// --- gọi lại khi query thay đổi (debounce 300ms)
-const doSearch = debounce(() => {
-  fetchReturns()
-}, 300)
-
-watch(() => props.query, () => {
-  doSearch()
-})
+const doSearch = debounce(fetchReturns, 300)
+watch(() => props.query, () => doSearch())
 
 function formatDate(dateString) {
   const d = new Date(dateString)
@@ -89,130 +52,133 @@ function formatDate(dateString) {
 }
 </script>
 
-
 <template>
   <div class="return-history-container">
     <h2 class="title">Lịch sử trả hàng</h2>
 
     <div v-if="loading" class="loading-text">Đang tải...</div>
 
-    <table v-else class="return-table">
-      <thead>
-        <tr>
-          <th>STT</th>
-          <th>Sản phẩm / Mã đơn hàng</th>
-          <th>Trạng thái</th>
-          <th>Ngày tạo</th>
-          <th></th>
-        </tr>
-      </thead>
+    <div v-else-if="(returnRequests?.length || 0) === 0" class="empty">
+      Chưa có yêu cầu trả hàng nào.
+    </div>
 
-      <tbody>
-        <tr v-for="(item, index) in returnRequests" :key="item.id">
-          <td>{{ index + 1 }}</td>
+    <div v-else class="table-wrapper">
+      <table class="return-table">
+        <thead>
+          <tr>
+            <th class="col-stt">STT</th>
+            <th>Sản phẩm / Mã đơn hàng</th>
+            <th class="col-status">Trạng thái</th>
+            <th class="col-date">Ngày tạo</th>
+            <th class="col-action"></th>
+          </tr>
+        </thead>
 
-          <!-- Mã đơn + danh sách sản phẩm có ảnh sản phẩm gốc -->
-          <td>
-            <div class="order-code">
-              <strong>Mã đơn hàng:</strong> {{ item?.order?.orderCode ?? '---' }}
-            </div>
+        <tbody>
+          <tr v-for="(item, index) in returnRequests" :key="item.id">
+            <td class="cell-center">{{ index + 1 }}</td>
 
-            <ul class="product-list">
-              <li
-                v-for="p in item.returnItems || []"
-                :key="p.id"
-                class="product-item"
-              >
-                <img
-                  :src="p.__thumb || noImage"
-                  :alt="p.__name"
-                  class="product-image"
-                  @error="$event.target.src = noImage"
-                />
-                <span class="product-text">
-                  {{ p.__name }} (x{{ p.quantity }})
-                </span>
-              </li>
-            </ul>
-          </td>
+            <td>
+              <div class="order-code">
+                <strong>Mã đơn hàng:</strong> {{ item?.order?.orderCode ?? '---' }}
+              </div>
 
-          <td>
-            <span :class="['status-tag', (item.status || '').toLowerCase()]">
-              {{ statusLabels[(item.status || '').toLowerCase()] || item.status }}
-            </span>
-          </td>
+              <ul class="product-list">
+                <li v-for="p in (item.returnItems || [])" :key="p.id" class="product-item">
+                  <img
+                    class="product-thumb"
+                    :src="p?.imageUrls?.[0] || noImage"
+                    :alt="p?.productName || 'Ảnh sản phẩm'"
+                    @error="$event.target.src = noImage"
+                    loading="lazy"
+                  />
+                  <span class="product-name" :title="p?.productName">
+                    {{ p?.productName || 'Sản phẩm' }} (x{{ p?.quantity ?? 0 }})
+                  </span>
+                </li>
+              </ul>
+            </td>
 
-          <td>{{ formatDate(item.createdAt) }}</td>
+            <td class="cell-center">
+              <span :class="['status-tag', (item?.status || '').toLowerCase()]">
+                {{ statusLabels[item?.status] || item?.status || '—' }}
+              </span>
+            </td>
 
-          <td>
-            <router-link
-              :to="`/return-requests/${item.id}`"
-              class="action-button"
-            >
-              Xem chi tiết
-            </router-link>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+            <td class="cell-center">{{ formatDate(item?.createdAt) }}</td>
+
+            <td class="cell-center">
+              <router-link :to="`/return-requests/${item.id}`" class="action-button">
+                Xem chi tiết
+              </router-link>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.return-history-container {
-  padding: 20px;
-}
+.return-history-container { padding: 20px; }
+.title { font-size: 22px; font-weight: 600; margin-bottom: 16px; }
+.loading-text { font-size: 16px; color: #666; }
 
-.title {
-  font-size: 22px;
-  font-weight: 600;
-  margin-bottom: 16px;
-}
-
-.loading-text {
-  font-size: 16px;
+.empty {
+  padding: 16px;
+  background: #f8f9fa;
+  border: 1px dashed #dcdcdc;
+  border-radius: 8px;
   color: #666;
 }
 
+/* ================== TABLE ================== */
+.table-wrapper { overflow-x: auto; }
+
 .return-table {
   width: 100%;
-  border-collapse: collapse;
-  background-color: #fff;
-  border-radius: 8px;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #fff;
+  border-radius: 10px;
   overflow: hidden;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  table-layout: fixed;
 }
 
-thead {
-  background-color: #f6f8fa;
-}
+thead { background: #f6f8fa; }
 
-th,
-td {
+th, td {
   padding: 12px 16px;
-  text-align: left;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;       /* cân giữa theo chiều dọc */
 }
 
 th {
   font-weight: 600;
   color: #333;
   border-bottom: 1px solid #e0e0e0;
+  text-align: left;
 }
 
-td {
-  border-bottom: 1px solid #f0f0f0;
-}
+tr:last-child td { border-bottom: 0; }
+tr:hover { background: #fafbfd; }
 
-tr:hover {
-  background-color: #f9f9f9;
-}
+/* cột fix width để bố cục đều hơn */
+.col-stt   { width: 72px;  text-align: center; }
+.col-status{ width: 170px; text-align: center; }
+.col-date  { width: 130px; text-align: center; }
+.col-action{ width: 128px; }
 
-/* Mã đơn + danh sách sản phẩm */
-.order-code {
-  margin-bottom: 6px;
-}
+.cell-center { text-align: center; }
+
+/* ================== ORDER + PRODUCTS ================== */
+.order-code { margin-bottom: 8px; }
 
 .product-list {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  gap: 8px;
   list-style: none;
   padding: 0;
   margin: 0;
@@ -221,55 +187,65 @@ tr:hover {
 .product-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 10px;
+  min-width: 0; /* để ellipsis hoạt động */
 }
 
-.product-image {
-  width: 40px;
-  height: 40px;
+.product-thumb {
+  width: 48px;
+  height: 48px;
   object-fit: cover;
-  border-radius: 4px;
-  border: 1px solid #ddd;
-}
-
-.product-text {
-  line-height: 1.2;
-}
-
-/* Nút xem chi tiết */
-.action-button {
-  display: inline-block;
-  padding: 6px 12px;
-  font-size: 14px;
-  font-weight: 500;
-  color: white;
-  background-color: #007bff;
   border-radius: 6px;
-  text-decoration: none;
-  transition: background-color 0.2s ease;
+  border: 1px solid #e3e3e3;
+  flex-shrink: 0;
 }
 
-.action-button:hover {
-  background-color: #0056b3;
+.product-name {
+  font-size: 14px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px; /* giới hạn để không tràn */
 }
 
-/* Badge trạng thái */
+/* ================== STATUS BADGE & ACTION ================== */
 .status-tag {
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 500;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: 10px;
   display: inline-block;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.status-tag.pending { background-color: #fff3cd; color: #856404; }
-.status-tag.approved { background-color: #d4edda; color: #155724; }
-.status-tag.rejected { background-color: #f8d7da; color: #721c24; }
-.status-tag.completed { background-color: #cce5ff; color: #004085; }
-.status-tag.wait_for_pickup { background-color: #e2e3ff; color: #383d7c; }
-.status-tag.refunded { background-color: #d1ecf1; color: #0c5460; }
-.status-tag.returned { background-color: #cddef1; color: #383d3d; border: 1px solid #ddd; }
-.status-tag.cancelled { background-color: #f5c6cb; color: #721c24; }
+.status-tag.pending        { background:#fff3cd; color:#856404; }
+.status-tag.approved       { background:#d4edda; color:#155724; }
+.status-tag.rejected       { background:#f8d7da; color:#721c24; }
+.status-tag.completed      { background:#cce5ff; color:#004085; }
+.status-tag.wait_for_pickup{ background:#e2e3ff; color:#383d7c; }
+.status-tag.refunded       { background:#d1ecf1; color:#0c5460; }
+.status-tag.returned       { background:#e6f0fb; color:#2d4a68; border:1px solid #d7e2f3; }
+.status-tag.cancelled      { background:#f5c6cb; color:#721c24; }
+
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  height: 32px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: #0d6efd;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: transform .05s ease, background-color .2s ease;
+}
+.action-button:hover { background: #0b5ed7; }
+.action-button:active { transform: translateY(1px); }
+
+/* responsive: nhiều sản phẩm thì chia cột cho gọn */
+@media (min-width: 640px) { .product-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 960px) { .product-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 </style>

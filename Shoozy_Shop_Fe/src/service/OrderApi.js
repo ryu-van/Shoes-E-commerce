@@ -45,4 +45,31 @@ export const getReturnableItems = (orderId, userId) => {
   });
 };
 
+// ====== EMAIL NOTIFICATION APIs ======
+// Gửi email thông báo đặt hàng thành công
+export const sendOrderSuccessEmail = (orderId) => {
+  return apiClient.post(`/order-email/send-success/${orderId}`);
+};
+
+// Gửi email thông báo hủy đơn hàng bởi người dùng
+export const sendOrderCancelledByUserEmail = (orderId) => {
+  return apiClient.post(`/order-email/send-cancelled-by-user/${orderId}`);
+};
+
+// Gửi email thông báo hoàn thành đơn hàng
+export const sendOrderCompletedEmail = (orderId) => {
+  return apiClient.post(`/order-email/send-completed/${orderId}`);
+};
+
+// Gửi email thông báo hủy đơn hàng bởi shop
+export const sendOrderCancelledByShopEmail = (orderId, reason) => {
+  return apiClient.post(`/order-email/send-cancelled-by-shop/${orderId}`, {
+    reason: reason
+  })
+};
+export const getTransactionByOrderCode = (orderCode) => {
+  return apiClient.get(`/orders/transaction`, {
+    params: { orderCode }
+  });
+};
 

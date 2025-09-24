@@ -10,4 +10,5 @@ public class CreateReturnRequestRequest {
     private String reason;
     private String note;
     private List<ReturnItemRequest> items;
+    private RefundInfoRequest refundInfo;
 }

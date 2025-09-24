@@ -1,6 +1,6 @@
 <script setup>
 import {ref, computed, onMounted, onBeforeUnmount} from 'vue'
-import {getOrderById, updateOrderStatus as updateOrderStatusAPI, getOrderTimelinesByOrderId, updateCustomerInfo, deleteOrderById} from "@/service/OrderApi.js";
+import {getOrderById, updateOrderStatus as updateOrderStatusAPI, getOrderTimelinesByOrderId, updateCustomerInfo, deleteOrderById, sendOrderCompletedEmail, sendOrderCancelledByShopEmail} from "@/service/OrderApi.js";
 import ShowToastComponent from "@/components/ShowToastComponent.vue";
 import ListAddressModal from "@/components/ListAddressModal.vue";
 import {useAuthStore} from "@/stores/Auth.js";
@@ -135,6 +135,14 @@ const confirmCancelOrder = async () => {
     const response = await deleteOrderById(props.id)
 
     if (response.success || response.status === 200) {
+      // Gửi email thông báo hủy đơn hàng bởi shop
+      try {
+        await sendOrderCancelledByShopEmail(props.id, statusDescription.value || 'Hủy đơn hàng theo yêu cầu');
+      } catch (emailError) {
+        console.warn("Không thể gửi email thông báo hủy đơn hàng:", emailError);
+        // Không hiển thị lỗi cho admin vì đơn hàng đã được hủy thành công
+      }
+
       currentStatus.value = 'CANCELLED'
       if (orderData.value) {
         orderData.value.status = 'CANCELLED'
@@ -171,6 +179,16 @@ const updateOrderStatus = async (newStatus, description = '') => {
     isUpdatingStatus.value = true
     const response = await updateOrderStatusAPI(props.id, newStatus, description)
     if (response.success || response.status === 200) {
+      // Gửi email thông báo khi hoàn thành đơn hàng
+      if (newStatus === 'COMPLETED') {
+        try {
+          await sendOrderCompletedEmail(props.id);
+        } catch (emailError) {
+          console.warn("Không thể gửi email thông báo hoàn thành đơn hàng:", emailError);
+          // Không hiển thị lỗi cho admin vì trạng thái đã được cập nhật thành công
+        }
+      }
+
       currentStatus.value = newStatus
       if (orderData.value) {
         orderData.value.status = newStatus
@@ -828,7 +846,7 @@ const handleUpdate = async () => {
 
     <!-- History Modal -->
     <div v-if="showHistoryModal" class="modal-overlay" @click="closeHistoryModal">
-      <div class="modal-dialog" style="max-width: 90vw; width: 60%" @click.stop>
+      <div class="modal-dialog" style="max-width: 90vw; width: 50%" @click.stop>
         <div class="modal-content">
           <div class="modal-header">
             <h5 class="modal-title">Lịch sử đơn hàng</h5>

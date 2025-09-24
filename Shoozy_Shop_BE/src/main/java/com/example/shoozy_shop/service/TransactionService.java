@@ -130,4 +130,9 @@ public class TransactionService implements ITransactionService {
         int rand = (int) (Math.random() * 900) + 100;
         return prefix + ts + rand; // ví dụ: COD250815101530123
     }
+
+    public Transaction getTransactionByCode(String codeOrder){
+        Transaction transactionExisting = transactionRepository.findByOrder_OrderCode(codeOrder);
+        return transactionExisting;
+    }
 }

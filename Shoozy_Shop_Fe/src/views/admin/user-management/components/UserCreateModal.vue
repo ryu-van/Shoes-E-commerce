@@ -3,6 +3,8 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { createUser } from '@/service/UserApis'
 import ShowToastComponent from "@/components/ShowToastComponent.vue"
+import { createAddress, setAddressSelected } from '@/service/AddressApi.js'
+import ListAddressModal from '@/components/ListAddressModal.vue' // ⬅️ dùng lại modal chọn địa chỉ bạn đã có
 
 const props = defineProps({
   roleName: {
@@ -36,17 +38,67 @@ const newUser = ref({
   email: '',
   gender: true,
   phoneNumber: '',
-  address: '',
+  address: '',            // sẽ được điền từ modal (readonly)
   dateOfBirth: '',
   roleName: props.roleName || 'Customer',
   password: ''
 })
+
 const avatarFile = ref(null)
 const avatarPreview = ref(null)
 const fieldErrors = reactive({})
 const generalError = ref('')
 const saving = ref(false)
 const toastRef = ref(null)
+
+// ==== state cho chọn địa chỉ bằng modal ====
+const showAddressModal = ref(false)
+const selectedProvinceId = ref(null)
+const selectedDistrictId = ref(null)
+const selectedWardCode   = ref(null)
+const addressDetail      = ref('')
+
+// preview ký tự
+const ADDRESS_MAX = 255
+const addressCount = ref(0)
+
+function buildAddressLine () {
+  // newUser.address đã là chuỗi do modal trả về; chỉ cần chuẩn hoá nhẹ
+  return String(newUser.value.address || '')
+    .replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, ADDRESS_MAX)
+}
+
+// nhận dữ liệu từ ListAddressModal
+function handleSaveAddress (payload) {
+  // modal của bạn đang emit @save="(addressObj) => {...}"
+  // theo code trước đó, addressObj.data chứa các field
+  const a = payload?.data || payload
+  if (!a) { showAddressModal.value = false; return }
+
+  // ưu tiên line; nếu không có, ghép từ các phần
+  const line = a.line ||
+    [a.addressDetail, a.wardName, a.districtName, a.provinceName].filter(Boolean).join(', ')
+
+  newUser.value.address = line || ''
+  addressDetail.value = a.addressDetail || ''
+  selectedProvinceId.value = a.provinceId ?? a.ProvinceID ?? null
+  selectedDistrictId.value = a.districtId ?? a.DistrictID ?? null
+  selectedWardCode.value   = a.wardCode   ?? a.WardCode   ?? null
+
+  addressCount.value = (newUser.value.address || '').length
+  // clear lỗi địa chỉ nếu có
+  delete fieldErrors.address
+  showAddressModal.value = false
+}
+
+function handleClearAddress () {
+  newUser.value.address = ''
+  addressDetail.value = ''
+  selectedProvinceId.value = null
+  selectedDistrictId.value = null
+  selectedWardCode.value = null
+  addressCount.value = 0
+}
 
 function handleFileUpload(event) {
   avatarFile.value = event.target.files[0]
@@ -108,7 +160,7 @@ function validate() {
     }
   }
 
-  // Số điện thoại (đồng bộ regex với BE)
+  // Số điện thoại
   if (!newUser.value.phoneNumber.trim()) {
     fieldErrors.phoneNumber = 'Vui lòng nhập số điện thoại'
     valid = false
@@ -117,9 +169,19 @@ function validate() {
     valid = false
   }
 
-  // Địa chỉ
-  if (!newUser.value.address.trim()) {
-    fieldErrors.address = 'Vui lòng nhập địa chỉ'
+  // Địa chỉ (bắt buộc chọn qua modal => newUser.address phải có)
+  const addr = buildAddressLine()
+  newUser.value.address = addr
+  addressCount.value = addr.length
+
+  if (!addr) {
+    fieldErrors.address = 'Vui lòng chọn/nhập địa chỉ'
+    valid = false
+  } else if (addr.length < 6) {
+    fieldErrors.address = 'Địa chỉ quá ngắn (tối thiểu 6 ký tự)'
+    valid = false
+  } else if (addr.length > ADDRESS_MAX) {
+    fieldErrors.address = `Địa chỉ không được vượt quá ${ADDRESS_MAX} ký tự`
     valid = false
   }
 
@@ -156,7 +218,6 @@ async function submit() {
     const formData = new FormData()
     formData.append('fullname', newUser.value.fullname?.trim() || '')
     formData.append('email', newUser.value.email?.trim() || '')
-    // đảm bảo phone chỉ là số 10 ký tự (phù hợp regex BE)
     formData.append('phoneNumber', digits10(newUser.value.phoneNumber))
     formData.append('address', newUser.value.address?.trim() || '')
     formData.append('password', newUser.value.password || '')
@@ -173,8 +234,37 @@ async function submit() {
       formData.append('avatar', avatarFile.value)
     }
 
-    await createUser(formData)
+    // 1) Tạo user
+    const res = await createUser(formData)
+    const userData = res?.data?.data || res?.data || {}
+    const userId = userData.id || userData.userId
     showToast('Tạo người dùng thành công 🎉', 'success')
+
+    // 2) Tạo Address & đặt mặc định (nếu đã chọn trong modal)
+    if (userId && newUser.value.address?.trim()) {
+      try {
+        const addrPayload = {
+          user_id: userId,
+          line: buildAddressLine(), // chuỗi đầy đủ
+          // nếu BE nhận dạng chi tiết, gửi thêm:
+          provinceId: selectedProvinceId.value || undefined,
+          districtId: selectedDistrictId.value || undefined,
+          wardCode:   selectedWardCode.value   || undefined,
+          addressDetail: addressDetail.value   || undefined
+        }
+        const addrRes = await createAddress(addrPayload)
+        const addrData = addrRes?.data?.data || addrRes?.data || {}
+        const addressId = addrData.id || addrData.addressId
+        if (addressId) {
+          await setAddressSelected(addressId, userId)
+        }
+      } catch (e) {
+        console.error('Create default address error:', e)
+        showToast('Tạo địa chỉ mặc định thất bại, bạn có thể thêm sau.', 'warning')
+      }
+    }
+
+    // 3) Điều hướng như cũ
     setTimeout(() => {
       router.push(newUser.value.roleName === 'Staff'
         ? '/admin/users/staff'
@@ -183,8 +273,6 @@ async function submit() {
     }, 500)
   } catch (err) {
     console.error(err)
-
-    // Đọc lỗi từ BE (axios)
     const res = err?.response
     const data = res?.data
     const msg  = data?.message || data?.error || data?.detail || ''
@@ -194,7 +282,6 @@ async function submit() {
     const isPhoneDup = is409 && (code === 'PHONE_EXISTS' || /(phone|số\s*điện\s*thoại)/i.test(msg))
     const isEmailDup = is409 && (code === 'EMAIL_EXISTS' || /email/i.test(msg))
 
-    // 1) Ưu tiên SĐT trước
     if (isPhoneDup) {
       delete fieldErrors.email
       fieldErrors.phoneNumber = msg || 'Số điện thoại đã tồn tại'
@@ -206,7 +293,6 @@ async function submit() {
       return
     }
 
-    // 2) Sau đó email
     if (isEmailDup) {
       delete fieldErrors.phoneNumber
       fieldErrors.email = msg || 'Email đã tồn tại'
@@ -218,7 +304,6 @@ async function submit() {
       return
     }
 
-    // 3) Map lỗi validate từ BE (hỗ trợ cả list và object map)
     const list = data?.errors || data?.violations || data?.fieldErrors
     const mapObj =
       (data && typeof data?.errors === 'object' && !Array.isArray(data.errors) && data.errors) ||
@@ -258,7 +343,6 @@ async function submit() {
       return
     }
 
-    // 4) Các lỗi khác
     generalError.value = msg || 'Có lỗi xảy ra. Vui lòng thử lại.'
     showToast(generalError.value, 'error')
   } finally {
@@ -281,15 +365,8 @@ function cancel() {
         <div class="col-md-4 bg-light d-flex flex-column align-items-center py-4 px-3">
           <h5 class="mb-3">Ảnh đại diện</h5>
           <div class="avatar-wrapper mb-2">
-            <img
-              v-if="avatarPreview"
-              :src="avatarPreview"
-              alt="Avatar Preview"
-              class="avatar-img"
-            />
-            <div v-else class="avatar-placeholder">
-              <small>No Image</small>
-            </div>
+            <img v-if="avatarPreview" :src="avatarPreview" alt="Avatar Preview" class="avatar-img" />
+            <div v-else class="avatar-placeholder"><small>No Image</small></div>
           </div>
           <input type="file" class="form-control mt-2" @change="handleFileUpload" />
         </div>
@@ -308,15 +385,9 @@ function cancel() {
               </div>
               <div class="col-md-6">
                 <label class="form-label">Số điện thoại</label>
-                <input
-                  v-model="newUser.phoneNumber"
-                  name="phoneNumber"
-                  type="text"
-                  inputmode="numeric"
-                  @input="newUser.phoneNumber = digits10($event.target.value)"
-                  class="form-control"
-                  :class="{ 'is-invalid': fieldErrors.phoneNumber }"
-                />
+                <input v-model="newUser.phoneNumber" name="phoneNumber" type="text" inputmode="numeric"
+                       @input="newUser.phoneNumber = digits10($event.target.value)"
+                       class="form-control" :class="{ 'is-invalid': fieldErrors.phoneNumber }"/>
                 <div v-if="fieldErrors.phoneNumber" class="invalid-feedback">{{ fieldErrors.phoneNumber }}</div>
               </div>
             </div>
@@ -336,11 +407,25 @@ function cancel() {
               </div>
             </div>
 
+            <!-- Địa chỉ: chọn qua modal -->
             <div class="mb-3">
-              <label class="form-label">Địa chỉ</label>
-              <textarea v-model="newUser.address" class="form-control" rows="3"
-                        :class="{ 'is-invalid': fieldErrors.address }"></textarea>
-              <div v-if="fieldErrors.address" class="invalid-feedback">{{ fieldErrors.address }}</div>
+              <label class="form-label d-flex justify-content-between align-items-center">
+                <span>Địa chỉ</span>
+                <small class="text-muted">{{ addressCount }}/{{ ADDRESS_MAX }} ký tự</small>
+              </label>
+
+              <div class="input-group">
+                <input type="text" class="form-control" :value="newUser.address" readonly
+                       :class="{ 'is-invalid': fieldErrors.address }"
+                       placeholder="Chưa chọn địa chỉ"/>
+                <button type="button" class="btn btn-primary" @click="showAddressModal = true">
+                  Danh sách địa chỉ
+                </button>
+                <button type="button" class="btn btn-secondary" @click="handleClearAddress" :disabled="!newUser.address">
+                  Xoá
+                </button>
+              </div>
+              <div v-if="fieldErrors.address" class="invalid-feedback d-block">{{ fieldErrors.address }}</div>
             </div>
 
             <div class="row mb-3">
@@ -381,6 +466,15 @@ function cancel() {
       </div>
     </div>
 
+    <!-- Modal chọn địa chỉ (dùng lại component của bạn) -->
+    <ListAddressModal
+      v-if="showAddressModal"
+      :userId="null"                
+      mode="picker"                 
+      @close="showAddressModal = false"
+      @save="handleSaveAddress"      
+    />
+
     <ShowToastComponent ref="toastRef" />
   </div>
 </template>
@@ -391,25 +485,12 @@ function cancel() {
   background: #fff;
   box-shadow: 0 4px 12px rgba(0,0,0,0.05);
 }
-@media (max-width: 768px) {
-  .user-form-wrapper { max-width: 95%; }
-}
+@media (max-width: 768px) {.user-form-wrapper { max-width: 95%; }}
 .avatar-wrapper {
-  width: 180px;
-  height: 180px;
-  border-radius: 50%;
-  border: 3px solid #e0e0e0;
-  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background-color: #fff;
+  width: 180px; height: 180px; border-radius: 50%;
+  border: 3px solid #e0e0e0; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  overflow: hidden; display: flex; align-items: center; justify-content: center; background-color: #fff;
 }
 .avatar-img { width: 100%; height: 100%; object-fit: cover; }
-.avatar-placeholder {
-  width: 100%; height: 100%;
-  display: flex; align-items: center; justify-content: center;
-  color: #aaa; font-size: 14px;
-}
+.avatar-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 14px; }
 </style>

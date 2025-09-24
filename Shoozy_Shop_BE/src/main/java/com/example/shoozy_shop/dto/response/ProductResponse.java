@@ -49,13 +49,15 @@ public class ProductResponse extends BaseResponse {
 
         Double minPrice = product.getProductVariants()
                 .stream()
-                .mapToDouble(ProductVariant::getSellPrice) // dùng sellPrice
+                .filter(variant -> variant.getSellPrice() != null) // Filter null values
+                .mapToDouble(ProductVariant::getSellPrice)
                 .min()
                 .orElse(0.0);
 
         Double maxPrice = product.getProductVariants()
                 .stream()
-                .mapToDouble(ProductVariant::getSellPrice) // dùng sellPrice
+                .filter(variant -> variant.getSellPrice() != null) // Filter null values
+                .mapToDouble(ProductVariant::getSellPrice)
                 .max()
                 .orElse(0.0);
 
@@ -119,13 +121,15 @@ public class ProductResponse extends BaseResponse {
 
         Double minPrice = product.getProductVariants()
                 .stream()
-                .mapToDouble(ProductVariant::getSellPrice) // dùng sellPrice
+                .filter(variant -> variant.getSellPrice() != null) // Filter null values
+                .mapToDouble(ProductVariant::getSellPrice)
                 .min()
                 .orElse(0.0);
 
         Double maxPrice = product.getProductVariants()
                 .stream()
-                .mapToDouble(ProductVariant::getSellPrice) // dùng sellPrice
+                .filter(variant -> variant.getSellPrice() != null) // Filter null values
+                .mapToDouble(ProductVariant::getSellPrice)
                 .max()
                 .orElse(0.0);
 

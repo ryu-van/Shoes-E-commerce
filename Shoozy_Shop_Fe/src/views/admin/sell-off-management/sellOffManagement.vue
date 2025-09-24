@@ -108,12 +108,12 @@
     <div v-if="pendingOrders.length" class="mb-4">
       <ul class="nav nav-tabs" role="tablist">
         <li v-for="po in pendingOrders" :key="po.code" class="nav-item" role="presentation">
-          <button class="nav-link d-flex align-items-center" @click="resumePendingOrder(po)">
+          <div class="nav-link d-flex align-items-center" @click="resumePendingOrder(po)" style="cursor: pointer;">
             <i class="fas fa-shopping-cart me-1"></i>{{ po.code }} - {{ currency(po.total || 0) }}
             <button class="btn btn-sm btn-link text-danger ms-2 p-0" @click.stop="removePendingOrder(po.code)" title="Xóa">
               <i class="fas fa-times"></i>
             </button>
-          </button>
+          </div>
         </li>
       </ul>
     </div>
@@ -156,12 +156,12 @@
           <ul class="nav nav-tabs" role="tablist">
             <!-- Tab các đơn chờ -->
             <li v-for="po in pendingOrders" :key="po.code" class="nav-item" role="presentation">
-              <button class="nav-link d-flex align-items-center" :class="activePendingCode === po.code ? 'active' : ''" @click="resumePendingOrder(po)">
+              <div class="nav-link d-flex align-items-center" :class="activePendingCode === po.code ? 'active' : ''" @click="resumePendingOrder(po)" style="cursor: pointer;">
                 <i class="fas fa-shopping-cart me-1"></i>{{ po.code }} - {{ currency(po.total || 0) }}
                 <button class="btn btn-sm btn-link text-danger ms-2 p-0" @click.stop="removePendingOrder(po.code)" title="Xóa">
                   <i class="fas fa-times"></i>
                 </button>
-              </button>
+              </div>
             </li>
           </ul>
         </div>
@@ -327,53 +327,74 @@
                </div>
 
                                <div class="mb-3">
-                  <label class="form-label"><i class="fas fa-tag me-1"></i>Voucher/Giảm giá</label>
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <label class="form-label mb-0"><i class="fas fa-tag me-1"></i>Voucher/Giảm giá</label>
+                    <button 
+                      class="btn btn-outline-primary btn-sm" 
+                      @click="toggleVoucherList"
+                      :disabled="voucherLoading"
+                    >
+                      <i v-if="voucherLoading" class="fas fa-spinner fa-spin"></i>
+                      <i v-else class="fas fa-list"></i>
+                      {{ showVoucherList ? 'Ẩn danh sách' : 'Xem voucher' }}
+                    </button>
+                  </div>
                   
                   <!-- Hiển thị danh sách voucher có sẵn -->
-                  <div v-if="availableVouchers.length > 0" class="mb-3">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                      <small class="text-muted">Mã giảm giá có sẵn:</small>
-                      <div class="btn-group btn-group-sm">
-                        <button class="btn btn-outline-secondary" @click="fetchAvailableVouchers" :disabled="voucherLoading" title="Làm mới danh sách">
-                          <i v-if="voucherLoading" class="fas fa-spinner fa-spin"></i>
-                          <i v-else class="fas fa-sync-alt"></i>
-                        </button>
+                  <div v-if="showVoucherList" class="mb-3">
+                    <div v-if="availableVouchers.length > 0">
+                      <div class="d-flex justify-content-between align-items-center mb-2">
+                        <small class="text-muted">Mã giảm giá có sẵn:</small>
+                        <div class="btn-group btn-group-sm">
+                          <button class="btn btn-outline-secondary" @click="fetchAvailableVouchers" :disabled="voucherLoading" title="Làm mới danh sách">
+                            <i v-if="voucherLoading" class="fas fa-spinner fa-spin"></i>
+                            <i v-else class="fas fa-sync-alt"></i>
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <div class="row g-2">
-                      <div v-for="voucher in availableVouchers" :key="voucher.id" class="col-12">
-                        <div class="card border-0 bg-light p-2 cursor-pointer" 
-                             @click="selectVoucher(voucher)"
-                             :class="{ 'border-primary': selectedVoucherId === voucher.id }"
-                             style="cursor: pointer;">
-                          <div class="d-flex justify-content-between align-items-center">
-                            <div class="flex-grow-1">
-                              <div class="fw-bold text-primary">{{ voucher.name }}</div>
-                              <small class="text-muted">
-                                Mã: <code>{{ voucher.code }}</code> | 
-                                {{ voucher.type ? `Giảm ${voucher.value}%` : `Giảm ${currency(voucher.value)}` }}
-                                <span v-if="voucher.minimumOrderValue"> | Tối thiểu: {{ currency(voucher.minimumOrderValue) }}</span>
-                              </small>
+                      <div class="row g-2">
+                        <div v-for="voucher in availableVouchers" :key="voucher.id" class="col-12">
+                          <div class="card border-0 bg-light p-2 cursor-pointer" 
+                               @click="selectVoucher(voucher)"
+                               :class="{ 'border-primary': selectedVoucherId === voucher.id }"
+                               style="cursor: pointer;">
+                            <div class="d-flex justify-content-between align-items-center">
+                              <div class="flex-grow-1">
+                                <div class="fw-bold text-primary">{{ voucher.name }}</div>
+                                <small class="text-muted">
+                                  Mã: <code>{{ voucher.code }}</code> | 
+                                  {{ voucher.type ? `Giảm ${voucher.value}%` : `Giảm ${currency(voucher.value)}` }}
+                                  <span v-if="voucher.minimumOrderValue"> | Tối thiểu: {{ currency(voucher.minimumOrderValue) }}</span>
+                                </small>
+                              </div>
+                              <button class="btn btn-sm btn-outline-primary" @click.stop="selectVoucher(voucher)">
+                                <i class="fas fa-plus"></i>
+                              </button>
                             </div>
-                            <button class="btn btn-sm btn-outline-primary" @click.stop="selectVoucher(voucher)">
-                              <i class="fas fa-plus"></i>
-                            </button>
                           </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                  
-                  <!-- Thông báo khi không có voucher -->
-                  <div v-else-if="!voucherLoading" class="mb-3">
-                    <div class="alert alert-info p-2 mb-0">
-                      <i class="fas fa-info-circle me-1"></i>
-                      <small>Không có mã giảm giá nào khả dụng cho đơn hàng này.</small>
-                      <br>
-                      <small class="text-muted">
-                        User ID: {{ customerType === 'regular' && selectedCustomer ? selectedCustomer.id : 1 }} | 
-                        Tổng đơn: {{ currency(totalAmount) }}
-                      </small>
+                    
+                    <!-- Thông báo khi không có voucher -->
+                    <div v-else-if="!voucherLoading" class="mb-3">
+                      <div class="alert alert-info p-2 mb-0">
+                        <i class="fas fa-info-circle me-1"></i>
+                        <small>Không có mã giảm giá nào khả dụng cho đơn hàng này.</small>
+                        <br>
+                        <small class="text-muted">
+                          <!-- User ID: {{ customerType === 'regular' && selectedCustomer ? selectedCustomer.id : 1 }} |  -->
+                          Tổng đơn: {{ currency(totalAmount) }}
+                        </small>
+                      </div>
+                    </div>
+                    
+                    <!-- Loading state -->
+                    <div v-else class="text-center py-3">
+                      <div class="spinner-border spinner-border-sm text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                      <p class="mt-2 text-muted">Đang tải danh sách voucher...</p>
                     </div>
                   </div>
                   
@@ -706,7 +727,7 @@
                                  <div v-if="shippingFee > 0" class="mt-2">
                    <small class="text-muted">
                      <i class="fas fa-info-circle me-1"></i>
-                     Phí ship được tính theo cân nặng thực tế: {{ getCartWeight() }}g
+                     Phí ship được tính theo cân nặng thực tế: {{ (getCartWeight() / 1000).toFixed(2) }}kg
                    </small>
                  </div>
                  <div v-if="shippingType === 'delivery'" class="mt-2">
@@ -948,6 +969,17 @@ import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue';
 import ShowToastComponent from '@/components/ShowToastComponent.vue';
 import ListAddressModal from '@/components/ListAddressModal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
+import * as ProductApi from '@/service/ProductApi.js';
+import * as BrandApi from '@/service/BrandApi.js';
+import * as SizeApi from '@/service/SizeApi.js';
+import * as CategoryApi from '@/service/CategoryApi.js';
+import PaymentMethodApi from '@/service/PaymentMethodApi.js';
+import * as OrderApi from '@/service/OrderApi.js';
+import CouponApi from '@/service/CouponApi.js';
+import { getAllUsers, createUser } from '@/service/UserApis.js';
+import { ShippingApi } from '@/service/ShippingApi';
+import { getSelectedAddress } from '@/service/AddressApi.js';
+import { generateVietQR, generateSimpleVietQR, validatePaymentInfo } from '@/service/VietQRApi.js';
 
 // Toast notification
 const toastMessage = ref('');
@@ -1003,17 +1035,6 @@ const pendingData = ref(null);
 const showQuantityModal = ref(false);
 const selectedProductForQuantity = ref(null);
 const quantityToAdd = ref(1);
-import * as ProductApi from '@/service/ProductApi.js';
-import * as BrandApi from '@/service/BrandApi.js';
-import * as SizeApi from '@/service/SizeApi.js';
-import * as CategoryApi from '@/service/CategoryApi.js';
-import PaymentMethodApi from '@/service/PaymentMethodApi.js';
-import * as OrderApi from '@/service/OrderApi.js';
-import CouponApi from '@/service/CouponApi.js';
-import { getAllUsers, createUser } from '@/service/UserApis.js';
-import { ShippingApi } from '@/service/ShippingApi';
-import { getSelectedAddress } from '@/service/AddressApi.js';
-import { generateVietQR, generateSimpleVietQR, validatePaymentInfo } from '@/service/VietQRApi.js';
 
 // Khu vực tìm kiếm & lọc
 const search = ref('');
@@ -1499,6 +1520,7 @@ function resetForm() {
   voucherSuccess.value = '';
   appliedVoucher.value = null;
   selectedVoucherId.value = '';
+  showVoucherList.value = false;
   
   // Reset QR code
   qrCodeData.value = null;
@@ -2037,6 +2059,7 @@ const voucherSuccess = ref('');
 const appliedVoucher = ref(null);
 const selectedVoucherId = ref('');
 const availableVouchers = ref([]);
+const showVoucherList = ref(false);
 
 // Thanh toán
 const customerCash = ref(0);
@@ -2381,6 +2404,14 @@ const removeVoucher = () => {
   
   // Làm mới danh sách voucher có sẵn
   fetchAvailableVouchers();
+};
+
+// Toggle hiển thị danh sách voucher
+const toggleVoucherList = () => {
+  showVoucherList.value = !showVoucherList.value;
+  if (showVoucherList.value && availableVouchers.value.length === 0) {
+    fetchAvailableVouchers();
+  }
 };
 
 // Xử lý khi thay đổi voucher trong combobox

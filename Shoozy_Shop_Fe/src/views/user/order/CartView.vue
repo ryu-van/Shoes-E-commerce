@@ -10,6 +10,91 @@ const isLoading = ref(true)
 const user = ref(null)
 const checkedItems = ref({})
 const toastRef = ref(null)
+const hasError = ref(false)
+
+const goToProductDetail = (item) => {
+  // Nếu có productId trực tiếp, sử dụng nó
+  if (item.productId) {
+    router.push(`/product-detail/${item.productId}`)
+  } 
+  // Nếu không có productId, có thể cần lấy từ idProductVariant
+  // Hoặc có thể cần gọi API để lấy productId từ variantId
+  else if (item.idProductVariant) {
+    // Tạm thời sử dụng idProductVariant, có thể cần điều chỉnh sau
+    console.warn('No productId found, using idProductVariant:', item.idProductVariant)
+    router.push(`/product-detail/${item.idProductVariant}`)
+  } else {
+    console.error('Cannot navigate to product detail: no productId or idProductVariant found')
+    toastRef.value?.showToast('Không thể xem chi tiết sản phẩm', 'error')
+  }
+}
+
+const retryLoadCart = async () => {
+  hasError.value = false
+  isLoading.value = true
+  
+  try {
+    const res = await cartApi.getCartItems(user.value.id)
+    console.log('Cart API response (retry):', res)
+    
+    // Xử lý response với cấu trúc mới: { success, message, data }
+    if (res?.data?.success === true && Array.isArray(res.data.data)) {
+      cartItems.value = res.data.data
+      hasError.value = false
+    } else if (res?.data?.status === 200 && Array.isArray(res.data.data)) {
+      // Fallback cho cấu trúc cũ
+      cartItems.value = res.data.data
+      hasError.value = false
+    } else {
+      console.warn('Unexpected response structure (retry):', res?.data)
+      cartItems.value = []
+      hasError.value = true
+    }
+    
+    checkedItems.value = {}
+    cartItems.value.forEach(item => {
+      checkedItems.value[item.idCartItem] = false
+    })
+  } catch (err) {
+    console.error('Error loading cart items (retry):', err)
+    hasError.value = true
+    cartItems.value = []
+    checkedItems.value = {}
+    
+    if (toastRef.value) {
+      toastRef.value.showToast('Vẫn không thể tải giỏ hàng. Vui lòng kiểm tra kết nối mạng.', 'error')
+    }
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const handleOutOfStockError = (err, item)=>{
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  if(status === 409 && data?.error==='OUT_OF_STOCK'){
+    const cartQuantity = Number(data.carQuantity??0);
+    const allowAdd = Number(data.allowAdd??0);
+    const maxQuantity = Math.max(cartQuantity + allowAdd,0);
+
+    const msg = allowAdd<=0
+      ? `Không thể thêm sản phẩm vào giỏ hàng. Trong giỏ hàng hiện có ${cartQuantity}.`
+      : `Không đủ hàng. Trong giỏ hàng hiện có ${cartQuantity}. Bạn chỉ có thể thêm tối đa ${allowAdd} sản phẩm nữa.`;
+    toastRef.value?.showToast(msg, 'warning');
+
+    if(item){
+      item.availableQuantity = maxQuantity;
+      if(item.quantity > maxQuantity){
+        item.quantity = maxQuantity;
+      }
+      if(maxQuantity===0&& item.idCartItem){
+        checkedItems.value[item.idCartItem] = false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
 
 // Trạng thái "chọn tất cả" - chỉ xét các sản phẩm còn hàng
 const isAllSelected = computed(() => {
@@ -24,9 +109,42 @@ const selectedCartItems = computed(() => {
   return cartItems.value.filter(item => checkedItems.value[item.idCartItem])
 })
 
+// Kiểm tra có sản phẩm nào vượt quá tồn kho trong danh sách được chọn
+const hasOverstockItems = computed(() => {
+  return selectedCartItems.value.some(item => 
+    item.availableQuantity && item.quantity > item.availableQuantity
+  )
+})
+
+// Lấy danh sách sản phẩm vượt quá tồn kho
+const overstockItems = computed(() => {
+  return selectedCartItems.value.filter(item => 
+    item.availableQuantity && item.quantity > item.availableQuantity
+  )
+})
+
 // Kiểm tra sản phẩm có hết hàng không
 const isOutOfStock = (item) => {
   return !item.availableQuantity || item.availableQuantity <= 0
+}
+
+// Kiểm tra sản phẩm có tồn kho thấp hoặc vượt quá tồn không
+const shouldShowStockWarning = (item) => {
+  if (!item.availableQuantity) return false
+  // Hiển thị khi: tồn kho < 10 hoặc số lượng trong giỏ > tồn kho
+  return item.availableQuantity < 10 || item.quantity > item.availableQuantity
+}
+
+// Lấy thông báo cảnh báo tồn kho
+const getStockWarningMessage = (item) => {
+  if (!item.availableQuantity) return ''
+  
+  if (item.quantity > item.availableQuantity) {
+    return `⚠️ Vượt quá tồn kho! Chỉ còn ${item.availableQuantity} sản phẩm`
+  } else if (item.availableQuantity < 10) {
+    return `⚠️ Tồn kho thấp! Chỉ còn ${item.availableQuantity} sản phẩm`
+  }
+  return ''
 }
 
 onMounted(async () => {
@@ -38,7 +156,19 @@ onMounted(async () => {
 
   try {
     const res = await cartApi.getCartItems(user.value.id)
-    cartItems.value = Array.isArray(res.data?.data) ? res.data.data : []
+    console.log('Cart API response:', res)
+    
+    // Xử lý response với cấu trúc mới: { success, message, data }
+    if (res?.data?.success === true && Array.isArray(res.data.data)) {
+      cartItems.value = res.data.data
+    } else if (res?.data?.status === 200 && Array.isArray(res.data.data)) {
+      // Fallback cho cấu trúc cũ
+      cartItems.value = res.data.data
+    } else {
+      console.warn('Unexpected response structure:', res?.data)
+      cartItems.value = []
+    }
+    
     checkedItems.value = {}
     cartItems.value.forEach(item => {
       // Chỉ cho phép chọn những sản phẩm còn hàng, hết hàng thì luôn là false
@@ -46,7 +176,16 @@ onMounted(async () => {
     })
   } catch (err) {
     console.error('Error loading cart items:', err)
-    router.replace("/")
+    
+    // Hiển thị thông báo lỗi cho user
+    if (toastRef.value) {
+      toastRef.value.showToast('Không thể tải giỏ hàng. Vui lòng thử lại sau.', 'error')
+    }
+    
+    // Đánh dấu có lỗi để hiển thị nút retry
+    hasError.value = true
+    cartItems.value = []
+    checkedItems.value = {}
   } finally {
     isLoading.value = false
   }
@@ -83,7 +222,7 @@ const increaseQuantity = async (item) => {
     await cartApi.changeCartItemQuantity(item.idCartItem, item.quantity + 1)
     item.quantity++
   } catch (err) {
-    console.error('Error increasing quantity:', err)
+    if(handleOutOfStockError(err,item)) return
     toastRef.value?.showToast('Có lỗi xảy ra khi tăng số lượng sản phẩm', 'error');
   }
 }
@@ -94,9 +233,99 @@ const decreaseQuantity = async (item) => {
       await cartApi.changeCartItemQuantity(item.idCartItem, item.quantity - 1)
       item.quantity--
     } catch (err) {
-      console.error('Error decreasing quantity:', err)
+      if(handleOutOfStockError(err,item)) return
       toastRef.value?.showToast('Có lỗi xảy ra khi giảm số lượng sản phẩm', 'error');
     }
+  }
+}
+
+// Xử lý nhập tay số lượng
+const handleQuantityInput = async (item, event) => {
+  const inputValue = event.target.value.trim()
+  
+  // Cho phép input trống tạm thời khi đang nhập
+  if (inputValue === '') {
+    return
+  }
+  
+  const newQuantity = parseInt(inputValue)
+  
+  // Kiểm tra input hợp lệ
+  if (isNaN(newQuantity) || newQuantity < 1) {
+    toastRef.value?.showToast('Số lượng phải là số nguyên dương', 'warning')
+    return
+  }
+  
+  // Kiểm tra sản phẩm hết hàng
+  if (isOutOfStock(item)) {
+    event.target.value = item.quantity
+    toastRef.value?.showToast('Sản phẩm này hiện đang hết hàng!', 'warning')
+    return
+  }
+  
+  // Kiểm tra tồn kho
+  if (item.availableQuantity && newQuantity > item.availableQuantity) {
+    toastRef.value?.showToast(`Chỉ còn ${item.availableQuantity} sản phẩm trong kho!`, 'warning')
+    return
+  }
+  
+  // Cập nhật số lượng
+  try {
+    await cartApi.changeCartItemQuantity(item.idCartItem, newQuantity)
+    item.quantity = newQuantity
+  } catch (err) {
+    if(handleOutOfStockError(err,item)) return
+    // Reset về giá trị cũ nếu có lỗi
+    event.target.value = item.quantity
+    toastRef.value?.showToast('Có lỗi xảy ra khi cập nhật số lượng sản phẩm', 'error')
+  }
+}
+
+// Xử lý khi blur khỏi input (khi người dùng hoàn thành nhập)
+const handleQuantityBlur = (item, event) => {
+  const inputValue = event.target.value.trim()
+  
+  // Nếu input trống, reset về giá trị hiện tại
+  if (inputValue === '') {
+    event.target.value = item.quantity
+    return
+  }
+  
+  const newQuantity = parseInt(inputValue)
+  
+  // Nếu input không hợp lệ, reset về giá trị hiện tại
+  if (isNaN(newQuantity) || newQuantity < 1) {
+    event.target.value = item.quantity
+    toastRef.value?.showToast('Số lượng không hợp lệ, đã khôi phục về giá trị cũ', 'warning')
+    return
+  }
+  
+  // Kiểm tra tồn kho và cập nhật nếu cần
+  if (item.availableQuantity && newQuantity > item.availableQuantity) {
+    event.target.value = item.availableQuantity
+    toastRef.value?.showToast(`Số lượng đã được điều chỉnh về ${item.availableQuantity} (tối đa có sẵn)`, 'info')
+    // Cập nhật số lượng về giá trị tối đa có thể
+    cartApi.changeCartItemQuantity(item.idCartItem, item.availableQuantity)
+      .then(() => {
+        item.quantity = item.availableQuantity
+      })
+      .catch(err => {
+        if(handleOutOfStockError(err,item)) return
+        event.target.value = item.quantity
+        toastRef.value?.showToast('Có lỗi xảy ra khi cập nhật số lượng', 'error')
+      })
+  }
+}
+
+// Xử lý khi focus vào input
+const handleQuantityFocus = (event) => {
+  event.target.select() // Chọn toàn bộ text để dễ thay thế
+}
+
+// Xử lý khi nhấn Enter
+const handleQuantityKeydown = (item, event) => {
+  if (event.key === 'Enter') {
+    event.target.blur() // Trigger blur để validate và cập nhật
   }
 }
 
@@ -121,6 +350,17 @@ const CheckOut = () => {
     toastRef.value?.showToast("Vui lòng chọn ít nhất một sản phẩm để thanh toán.", 'warning');
     return
   }
+
+  // Kiểm tra có sản phẩm vượt quá tồn kho không
+  if (hasOverstockItems.value) {
+    const overstockNames = overstockItems.value.map(item => item.productName).join(', ')
+    toastRef.value?.showToast(
+      `Không thể thanh toán! Các sản phẩm sau vượt quá tồn kho: ${overstockNames}. Vui lòng điều chỉnh số lượng.`, 
+      'error'
+    );
+    return
+  }
+
   router.push({
     name: 'CheckoutView',
     query: {ids: selectedIds.join(',')}
@@ -146,6 +386,8 @@ const getFinalPrice = (item) => {
 const getOriginalPrice = (item) => {
   return item.price
 }
+
+
 </script>
 
 <template>
@@ -195,25 +437,43 @@ const getOriginalPrice = (item) => {
                 <span class="checkmark">✓</span>
               </label>
             </div>
-            <div class="cart-item-image-wrapper">
+            <div class="cart-item-image-wrapper" @click="goToProductDetail(item)" :title="'Xem chi tiết ' + item.productName">
               <img :src="item.productImage" alt="" class="cart-item-img">
               <div v-if="isOutOfStock(item)" class="out-of-stock-overlay">
                 <span class="out-of-stock-text">HẾT HÀNG</span>
               </div>
             </div>
             <div class="cart-item-details">
-              <div class="cart-item-title" :class="{ 'strikethrough': isOutOfStock(item) }">
+              <div class="cart-item-title" 
+                   :class="{ 'strikethrough': isOutOfStock(item) }"
+                   @click="goToProductDetail(item)" 
+                   :title="'Xem chi tiết ' + item.productName">
                 {{ item.productName }}
               </div>
               <div class="cart-item-desc" :class="{ 'strikethrough': isOutOfStock(item) }">
                 Size: {{ item.size }} &nbsp;|&nbsp; Màu: {{ item.color }}
               </div>
+              <!-- Hiển thị cảnh báo tồn kho -->
+              <div v-if="shouldShowStockWarning(item)" class="stock-warning-message">
+                {{ getStockWarningMessage(item) }}
+              </div>
               <div class="cart-item-actions">
                 <button class="qty-btn"
                         @click="decreaseQuantity(item)"
                         :disabled="isOutOfStock(item)">-</button>
-                <span class="mx-1 qty-number"
-                      :class="{ 'strikethrough': isOutOfStock(item) }">{{ item.quantity }}</span>
+                <input 
+                  type="number" 
+                  class="qty-input"
+                  :class="{ 'strikethrough': isOutOfStock(item) }"
+                  :value="item.quantity"
+                  :disabled="isOutOfStock(item)"
+                  min="1"
+                  :max="item.availableQuantity || 999999"
+                  @input="handleQuantityInput(item, $event)"
+                  @blur="handleQuantityBlur(item, $event)"
+                  @focus="handleQuantityFocus"
+                  @keydown="handleQuantityKeydown(item, $event)"
+                />
                 <button class="qty-btn"
                         @click="increaseQuantity(item)"
                         :disabled="isOutOfStock(item)">+</button>
@@ -257,12 +517,51 @@ const getOriginalPrice = (item) => {
             <span>Tổng</span>
             <span>{{ calculateTotal.toLocaleString() }}đ</span>
           </div>
+          
+          <!-- Cảnh báo vượt quá tồn kho -->
+          <div v-if="hasOverstockItems" class="overstock-warning">
+            <div class="warning-icon">⚠️</div>
+            <div class="warning-text">
+              <strong>Không thể thanh toán!</strong><br>
+              Có sản phẩm vượt quá tồn kho. Vui lòng điều chỉnh số lượng.
+            </div>
+          </div>
+          
           <button
               class="btn-checkout"
               @click="CheckOut"
-              :disabled="selectedCartItems.length === 0"
+              :disabled="selectedCartItems.length === 0 || hasOverstockItems"
           >
             Thanh toán
+          </button>
+        </div>
+      </div>
+    </div>
+    <div v-else-if="hasError">
+      <div style="text-align:center; padding: 150px 0;">
+        <div style="font-size: 4rem; margin-bottom: 20px;">⚠️</div>
+        <p style="font-size:1.18rem; color: #dc3545; font-weight: 600; margin-bottom: 10px;">
+          Không thể tải giỏ hàng
+        </p>
+        <p style="font-weight:400; font-size:0.95rem; color:#888; margin-bottom: 30px;">
+          Có lỗi xảy ra khi tải dữ liệu giỏ hàng. Vui lòng thử lại.
+        </p>
+        <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+          <button
+              class="btn-checkout"
+              style="width:auto; padding:12px 28px; font-size:1rem; background: #007bff;"
+              @click="retryLoadCart"
+              :disabled="isLoading"
+          >
+            <span v-if="isLoading" class="spinner-border spinner-border-sm me-2"></span>
+            {{ isLoading ? 'Đang tải...' : 'Thử lại' }}
+          </button>
+          <button
+              class="btn-checkout"
+              style="width:auto; padding:12px 28px; font-size:1rem; background: #6c757d;"
+              @click="router.replace('/')"
+          >
+            Về trang chủ
           </button>
         </div>
       </div>
@@ -367,6 +666,12 @@ const getOriginalPrice = (item) => {
 .cart-item-image-wrapper {
   position: relative;
   display: inline-block;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.cart-item-image-wrapper:hover {
+  transform: scale(1.02);
 }
 
 .cart-item-img {
@@ -435,6 +740,15 @@ const getOriginalPrice = (item) => {
   font-weight: 700;
   margin-bottom: 1.5px;
   color: #000;
+  cursor: pointer;
+  transition: color 0.2s ease;
+  padding: 2px 0;
+  border-radius: 4px;
+}
+
+.cart-item-title:hover {
+  color: #007bff;
+  background-color: rgba(0, 123, 255, 0.05);
 }
 
 .cart-item-desc {
@@ -442,6 +756,20 @@ const getOriginalPrice = (item) => {
   color: #888;
   margin-bottom: 2px;
   letter-spacing: 0.01em;
+}
+
+.stock-warning-message {
+  font-size: 0.85rem;
+  color: #ff6b35;
+  background: rgba(255, 107, 53, 0.1);
+  border: 1px solid rgba(255, 107, 53, 0.3);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 4px 0;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .cart-item-actions {
@@ -484,6 +812,51 @@ const getOriginalPrice = (item) => {
   font-size: 1rem;
   font-weight: 600;
   color: #222;
+}
+
+.qty-input {
+  width: 50px;
+  height: 30px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  color: #000;
+  font-weight: 600;
+  text-align: center;
+  font-size: 1rem;
+  padding: 0 4px;
+  transition: border-color 0.19s, background 0.19s;
+  outline: none;
+}
+
+.qty-input:hover:not(:disabled) {
+  border-color: #222;
+  background: #f8f8f8;
+}
+
+.qty-input:focus:not(:disabled) {
+  border-color: #000;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+}
+
+.qty-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f5f5f5;
+  border-color: #ddd;
+  color: #999;
+}
+
+.qty-input::-webkit-outer-spin-button,
+.qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.qty-input[type=number] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 .remove-btn {
@@ -605,6 +978,48 @@ const getOriginalPrice = (item) => {
 .btn-checkout:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.overstock-warning {
+  background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+  border: 2px solid #f44336;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  animation: pulse-warning 2s infinite;
+}
+
+.warning-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.warning-text {
+  color: #d32f2f;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.warning-text strong {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+@keyframes pulse-warning {
+  0% {
+    box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(244, 67, 54, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(244, 67, 54, 0);
+  }
 }
 
 /* Custom Checkbox Styles */
@@ -733,6 +1148,30 @@ const getOriginalPrice = (item) => {
     font-size: 0.6rem;
     padding: 4px 18px;
     letter-spacing: 0.8px;
+  }
+}
+
+/* Spinner styles */
+.spinner-border {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  vertical-align: text-bottom;
+  border: 0.125em solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spinner-border 0.75s linear infinite;
+}
+
+.spinner-border-sm {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-width: 0.1em;
+}
+
+@keyframes spinner-border {
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

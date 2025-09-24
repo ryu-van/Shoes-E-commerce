@@ -14,8 +14,51 @@ const props = defineProps({
 const router = useRouter()
 const loading = ref(false)
 const submitAttempted = ref(false)
+const isSubmitting = ref(false)
 const toastRef = ref(null)
 
+// ===== CONSTANTS =====
+const CHARACTER_LIMIT = 500
+const MAX_NAME_LENGTH = 100
+const MIN_NAME_LENGTH = 3
+const MAX_DISCOUNT_PERCENT = 90
+const MIN_DISCOUNT_PERCENT = 0
+const PRODUCT_PAGE_SIZE = 9
+
+// ===== VALIDATION MESSAGES =====
+const VALIDATION_MESSAGES = {
+  name: {
+    required: 'Tên khuyến mãi không được để trống',
+    minLength: `Tên khuyến mãi phải có ít nhất ${MIN_NAME_LENGTH} ký tự`,
+    maxLength: `Tên khuyến mãi không được vượt quá ${MAX_NAME_LENGTH} ký tự`
+  },
+  value: {
+    required: 'Giá trị giảm giá không được để trống',
+    invalid: 'Giá trị giảm giá phải là số',
+    negative: 'Giá trị giảm giá không được âm',
+    max: `Giá trị giảm giá không được vượt quá ${MAX_DISCOUNT_PERCENT}%`
+  },
+  dates: {
+    startRequired: 'Ngày bắt đầu không được để trống',
+    endRequired: 'Ngày kết thúc không được để trống',
+    invalidRange: 'Ngày kết thúc phải sau ngày bắt đầu',
+    pastDate: 'Ngày bắt đầu không được trong quá khứ'
+  },
+  description: {
+    maxLength: `Mô tả không được vượt quá ${CHARACTER_LIMIT} ký tự`
+  },
+  variant: {
+    priceRequired: 'Giá sau khuyến mãi không được để trống',
+    priceNegative: 'Giá sau khuyến mãi không được âm',
+    priceExceed: 'Giá sau khuyến mãi không được lớn hơn giá gốc',
+    discountRequired: 'Phần trăm giảm giá không được để trống',
+    discountNegative: 'Phần trăm giảm giá không được âm',
+      discountExceed: 'Phần trăm giảm giá không được vượt quá 90%',
+    discountPriceMismatch: 'Phần trăm và giá sau KM không khớp'
+  }
+}
+
+// ===== REACTIVE STATE =====
 const form = ref({
   name: '',
   value: 0,
@@ -27,44 +70,37 @@ const form = ref({
   code: '',
 })
 
-// Debug
-console.log('Initial form state:', form.value)
-
-const errors = ref({
-  name: '',
-  value: '',
-  start_date: '',
-  expiration_date: '',
-  description: '',
-  code: '',
-})
-
-const touched = ref({
-  name: false,
-  code: false,
-  value: false,
-  start_date: false,
-  expiration_date: false,
-  description: false
-})
+const initialForm = ref({})
+const errors = ref({})
+const touched = ref({})
 
 const products = ref([])
 const productsLoading = ref(false)
 const activeProductsForPromotion = ref([])
-
-
 const variantPromotionData = ref({})
-const variantErrors = ref({}) // { [variantId]: { price: '', discountPercent: '' } }
+const variantErrors = ref({})
 
+// ===== MODAL STATE =====
+const showProductModal = ref(false)
+const tempSelectedProducts = ref([])
+const productSearch = ref('')
+const categories = ref([])
+const selectedCategory = ref('')
+const productPage = ref(1)
+const productTotal = ref(0)
+
+// ===== COMPUTED PROPERTIES =====
 const isViewMode = computed(() => props.mode === 'detail')
 const isEditMode = computed(() => props.mode === 'update')
 const isCreateMode = computed(() => props.mode === 'create')
+const isEditable = computed(() => !isViewMode.value)
 
 const headerTitle = computed(() => {
   if (isCreateMode.value) return 'Tạo khuyến mãi mới'
   if (isEditMode.value) return 'Cập nhật khuyến mãi'
   return 'Chi tiết khuyến mãi'
 })
+
 const headerDesc = computed(() => {
   if (isCreateMode.value) return 'Tạo chương trình khuyến mãi hấp dẫn cho khách hàng'
   if (isEditMode.value) return 'Chỉnh sửa thông tin khuyến mãi'
@@ -72,7 +108,7 @@ const headerDesc = computed(() => {
 })
 
 const characterCount = computed(() => form.value.description?.length || 0)
-const characterLimit = 500
+const productTotalPages = computed(() => Math.ceil(productTotal.value / PRODUCT_PAGE_SIZE))
 
 const isFormValid = computed(() => {
   return Object.values(errors.value).every(error => !error) &&
@@ -81,8 +117,8 @@ const isFormValid = computed(() => {
       form.value.value !== '' &&
       form.value.start_date &&
       form.value.expiration_date &&
-      form.value.value >= 0 &&
-      form.value.value <= 100
+      form.value.value >= MIN_DISCOUNT_PERCENT &&
+      form.value.value <= MAX_DISCOUNT_PERCENT
 })
 
 const discountPreview = computed(() => {
@@ -90,7 +126,19 @@ const discountPreview = computed(() => {
   return `Giảm ${form.value.value}% giá trị sản phẩm`
 })
 
-// Hàm tính thời lượng giữa 2 mốc datetime
+const hasUnsavedChanges = computed(() => {
+  return JSON.stringify(form.value) !== JSON.stringify(initialForm.value)
+})
+
+const canSubmit = computed(() => {
+  return isFormValid.value && !isSubmitting.value && !loading.value
+})
+
+const filteredProducts = computed(() => {
+  return products.value
+})
+
+// ===== UTILITY FUNCTIONS =====
 const getDurationString = (start, end) => {
   if (!start || !end) return ''
   const startDate = new Date(start)
@@ -107,48 +155,75 @@ const getDurationString = (start, end) => {
   return result.trim()
 }
 
+const formatDateTime = (date) => {
+  if (!date) return ''
+  try {
+    const dateObj = new Date(date)
+    if (isNaN(dateObj.getTime())) return ''
+    const year = dateObj.getFullYear()
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0')
+    const day = String(dateObj.getDate()).padStart(2, '0')
+    const hours = String(dateObj.getHours()).padStart(2, '0')
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day}T${hours}:${minutes}`
+  } catch (e) {
+    console.error('Lỗi khi format datetime:', e)
+    return ''
+  }
+}
+
+const showNotification = (message, type = 'success') => {
+  if (toastRef.value) {
+    toastRef.value.showToast(message, type)
+  } else {
+    console.log(`${type.toUpperCase()}: ${message}`)
+  }
+}
+
+// ===== VALIDATION FUNCTIONS =====
 const validateField = (field, value) => {
   switch (field) {
     case 'name':
       if (!value || value.trim().length === 0) {
-        errors.value.name = 'Tên khuyến mãi không được để trống'
-      } else if (value.length < 3) {
-        errors.value.name = 'Tên khuyến mãi phải có ít nhất 3 ký tự'
-      } else if (value.length > 100) {
-        errors.value.name = 'Tên khuyến mãi không được vượt quá 100 ký tự'
+        errors.value.name = VALIDATION_MESSAGES.name.required
+      } else if (value.length < MIN_NAME_LENGTH) {
+        errors.value.name = VALIDATION_MESSAGES.name.minLength
+      } else if (value.length > MAX_NAME_LENGTH) {
+        errors.value.name = VALIDATION_MESSAGES.name.maxLength
       } else {
         errors.value.name = ''
       }
       break
+      
     case 'value': {
       const numValue = Number(value)
       if (value === '' || value === null || value === undefined) {
-        errors.value.value = 'Giá trị giảm giá không được để trống'
+        errors.value.value = VALIDATION_MESSAGES.value.required
       } else if (isNaN(numValue)) {
-        errors.value.value = 'Giá trị giảm giá phải là số'
-      } else if (numValue < 0) {
-        errors.value.value = 'Giá trị giảm giá không được âm'
-      } else if (numValue > 100) {
-        errors.value.value = 'Giá trị giảm giá không được vượt quá 100%'
+        errors.value.value = VALIDATION_MESSAGES.value.invalid
+      } else if (numValue < MIN_DISCOUNT_PERCENT) {
+        errors.value.value = VALIDATION_MESSAGES.value.negative
+      } else if (numValue > MAX_DISCOUNT_PERCENT) {
+        errors.value.value = VALIDATION_MESSAGES.value.max
       } else {
         errors.value.value = ''
       }
     }
       break
+      
     case 'start_date':
       if (!value) {
-        errors.value.start_date = 'Ngày bắt đầu không được để trống'
+        errors.value.start_date = VALIDATION_MESSAGES.dates.startRequired
       } else {
         const startDate = new Date(value)
         const now = new Date()
 
         if (isCreateMode.value) {
-          // Chỉ kiểm tra ngày, không kiểm tra giờ phút
           const startDateOnly = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate())
           const todayOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 
           if (startDateOnly < todayOnly) {
-            errors.value.start_date = 'Ngày bắt đầu không được trong quá khứ'
+            errors.value.start_date = VALIDATION_MESSAGES.dates.pastDate
           } else {
             errors.value.start_date = ''
           }
@@ -157,18 +232,20 @@ const validateField = (field, value) => {
         }
       }
       break
+      
     case 'expiration_date':
       if (!value) {
-        errors.value.expiration_date = 'Ngày kết thúc không được để trống'
+        errors.value.expiration_date = VALIDATION_MESSAGES.dates.endRequired
       } else if (form.value.start_date && new Date(value) <= new Date(form.value.start_date)) {
-        errors.value.expiration_date = 'Ngày kết thúc phải sau ngày bắt đầu'
+        errors.value.expiration_date = VALIDATION_MESSAGES.dates.invalidRange
       } else {
         errors.value.expiration_date = ''
       }
       break
+      
     case 'description':
-      if (value && value.length > characterLimit) {
-        errors.value.description = `Mô tả không được vượt quá ${characterLimit} ký tự`
+      if (value && value.length > CHARACTER_LIMIT) {
+        errors.value.description = VALIDATION_MESSAGES.description.maxLength
       } else {
         errors.value.description = ''
       }
@@ -184,13 +261,42 @@ const validateForm = () => {
   return isFormValid.value
 }
 
+// ===== EVENT HANDLERS =====
 const handleBlur = (field) => {
   touched.value[field] = true
   validateField(field, form.value[field])
 }
+
 const handleInput = (field) => {
   if (touched.value[field] || submitAttempted.value) {
     validateField(field, form.value[field])
+  }
+}
+
+const handleFieldChange = (field, value) => {
+  form.value[field] = value
+  handleInput(field)
+}
+
+const handleKeydown = (event) => {
+  if (event.ctrlKey && event.key === 's') {
+    event.preventDefault()
+    if (!isViewMode.value) {
+      handleSubmit()
+    }
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    goBack()
+  }
+}
+
+const goBack = () => {
+  if (hasUnsavedChanges.value && !isViewMode.value) {
+    if (confirm('Bạn có thay đổi chưa được lưu. Bạn có chắc chắn muốn rời khỏi trang?')) {
+      router.push('/admin/promotions')
+    }
+  } else {
+    router.push('/admin/promotions')
   }
 }
 
@@ -230,32 +336,6 @@ watch(() => form.value.value, (newVal, oldVal) => {
   })
 })
 
-const fetchProducts = async () => {
-  try {
-    productsLoading.value = true
-    const res = await getListOfProducts()
-    let productData = []
-    if (res && res.data) {
-      if (Array.isArray(res.data)) {
-        productData = res.data
-      } else if (res.data.data && Array.isArray(res.data.data)) {
-        productData = res.data.data
-      } else if (res.data.products && Array.isArray(res.data.products)) {
-        productData = res.data.products
-      }
-    }
-    products.value = productData.filter(product =>
-        product && typeof product === 'object' && product.id && product.name
-    )
-  } catch (err) {
-    console.error('Lỗi khi lấy danh sách sản phẩm:', err)
-    products.value = []
-    showNotification('Không thể tải danh sách sản phẩm', 'error')
-  } finally {
-    productsLoading.value = false
-  }
-}
-
 const fetchPromotion = async () => {
   if (!props.id) return
   loading.value = true
@@ -270,49 +350,16 @@ const fetchPromotion = async () => {
         }
       })
 
-      // format cho datetime-local
+      // Format dates for datetime-local input
       if (form.value.start_date) {
-        try {
-          // Đảm bảo định dạng ngày tháng đúng cho input datetime-local
-          // Giữ nguyên múi giờ địa phương khi chuyển đổi
-          const startDateStr = form.value.start_date
-          const startDate = new Date(startDateStr)
-
-          if (!isNaN(startDate.getTime())) {
-            // Tạo chuỗi ngày giờ theo định dạng YYYY-MM-DDTHH:MM giữ nguyên múi giờ địa phương
-            const year = startDate.getFullYear()
-            const month = String(startDate.getMonth() + 1).padStart(2, '0')
-            const day = String(startDate.getDate()).padStart(2, '0')
-            const hours = String(startDate.getHours()).padStart(2, '0')
-            const minutes = String(startDate.getMinutes()).padStart(2, '0')
-
-            form.value.start_date = `${year}-${month}-${day}T${hours}:${minutes}`
-          }
-        } catch (e) {
-          console.error('Lỗi khi xử lý ngày bắt đầu:', e)
-        }
+        form.value.start_date = formatDateTime(form.value.start_date)
       }
       if (form.value.expiration_date) {
-        try {
-          // Đảm bảo định dạng ngày tháng đúng cho input datetime-local
-          // Giữ nguyên múi giờ địa phương khi chuyển đổi
-          const expirationDateStr = form.value.expiration_date
-          const expirationDate = new Date(expirationDateStr)
-
-          if (!isNaN(expirationDate.getTime())) {
-            // Tạo chuỗi ngày giờ theo định dạng YYYY-MM-DDTHH:MM giữ nguyên múi giờ địa phương
-            const year = expirationDate.getFullYear()
-            const month = String(expirationDate.getMonth() + 1).padStart(2, '0')
-            const day = String(expirationDate.getDate()).padStart(2, '0')
-            const hours = String(expirationDate.getHours()).padStart(2, '0')
-            const minutes = String(expirationDate.getMinutes()).padStart(2, '0')
-
-            form.value.expiration_date = `${year}-${month}-${day}T${hours}:${minutes}`
-          }
-        } catch (e) {
-          console.error('Lỗi khi xử lý ngày kết thúc:', e)
-        }
+        form.value.expiration_date = formatDateTime(form.value.expiration_date)
       }
+
+      // Store initial form state
+      initialForm.value = JSON.parse(JSON.stringify(form.value))
 
       // Map dữ liệu biến thể khuyến mãi
       if (Array.isArray(promotionData.promotionVariantDetailResponses)) {
@@ -374,12 +421,31 @@ const fetchPromotion = async () => {
   }
 }
 
-const showNotification = (message, type = 'success') => {
-  if (toastRef.value) {
-    toastRef.value.showToast(message, type)
-  } else {
-    // Fallback nếu toastRef chưa sẵn sàng
-    console.log(`${type.toUpperCase()}: ${message}`)
+// ===== SUBMIT FUNCTIONS =====
+const prepareSubmitData = () => {
+  let startDate = form.value.start_date
+  let expirationDate = form.value.expiration_date
+
+  // Clean up date format
+  if (startDate.includes('Z')) startDate = startDate.replace('Z', '')
+  if (expirationDate.includes('Z')) expirationDate = expirationDate.replace('Z', '')
+
+  // Ensure proper format for API
+  if (!startDate.includes('T')) {
+    startDate = formatDateTime(startDate)
+  }
+  if (!expirationDate.includes('T')) {
+    expirationDate = formatDateTime(expirationDate)
+  }
+
+  return {
+    name: form.value.name,
+    value: form.value.value,
+    start_date: startDate,
+    expiration_date: expirationDate,
+    description: form.value.description,
+    ...(isEditMode.value && form.value.code ? { code: form.value.code } : {}),
+    productPromotionRequests: buildProductPromotionRequests()
   }
 }
 
@@ -389,54 +455,12 @@ const handleSubmit = async () => {
     showNotification('Vui lòng kiểm tra lại thông tin form', 'error')
     return
   }
+
+  isSubmitting.value = true
   loading.value = true
+
   try {
-    // Xử lý định dạng ngày tháng đúng cách, giữ nguyên múi giờ địa phương
-    let startDate = form.value.start_date
-    let expirationDate = form.value.expiration_date
-
-    // Đảm bảo định dạng ngày tháng đúng, loại bỏ 'Z' nếu có
-    if (startDate.includes('Z')) {
-      startDate = startDate.replace('Z', '')
-    }
-    if (expirationDate.includes('Z')) {
-      expirationDate = expirationDate.replace('Z', '')
-    }
-
-    // Đảm bảo định dạng chuẩn cho API, giữ nguyên múi giờ địa phương
-    if (!startDate.includes('T')) {
-      const date = new Date(startDate)
-      const year = date.getFullYear()
-      const month = String(date.getMonth() + 1).padStart(2, '0')
-      const day = String(date.getDate()).padStart(2, '0')
-      const hours = String(date.getHours()).padStart(2, '0')
-      const minutes = String(date.getMinutes()).padStart(2, '0')
-      startDate = `${year}-${month}-${day}T${hours}:${minutes}`
-    }
-
-    if (!expirationDate.includes('T')) {
-      const date = new Date(expirationDate)
-      const year = date.getFullYear()
-      const month = String(date.getMonth() + 1).padStart(2, '0')
-      const day = String(date.getDate()).padStart(2, '0')
-      const hours = String(date.getHours()).padStart(2, '0')
-      const minutes = String(date.getMinutes()).padStart(2, '0')
-      expirationDate = `${year}-${month}-${day}T${hours}:${minutes}`
-    }
-
-    const submitData = {
-      name: form.value.name,
-      value: form.value.value,
-      start_date: startDate,
-      expiration_date: expirationDate,
-      description: form.value.description,
-      // Only include code for update mode
-      ...(isEditMode.value && form.value.code ? {code: form.value.code} : {}),
-      productPromotionRequests: buildProductPromotionRequests() // FIX: không gửi priority
-    }
-
-    console.log('Form data:', form.value)
-    console.log('Submit data:', submitData)
+    const submitData = prepareSubmitData()
 
     if (isEditMode.value) {
       await promotionApi.updatePromotion(props.id, submitData)
@@ -446,8 +470,11 @@ const handleSubmit = async () => {
       showNotification('Tạo khuyến mãi thành công!', 'success')
     }
 
-    // Đợi toast hiển thị xong rồi mới chuyển trang
-    await new Promise(resolve => setTimeout(resolve, 1500)) // Đợi 1.5 giây
+    // Update initial form to reflect saved state
+    initialForm.value = JSON.parse(JSON.stringify(form.value))
+
+    // Wait for toast to show before redirecting
+    await new Promise(resolve => setTimeout(resolve, 1500))
     router.push('/admin/promotions')
   } catch (error) {
     console.error('Error details:', error)
@@ -455,59 +482,48 @@ const handleSubmit = async () => {
     showNotification(errorMessage, 'error')
   } finally {
     loading.value = false
+    isSubmitting.value = false
   }
 }
 
-const goBack = () => {
-  router.push('/admin/promotions')
-}
-
-const handleKeydown = (event) => {
-  if (event.ctrlKey && event.key === 's') {
-    event.preventDefault()
-    if (!isViewMode.value) {
-      handleSubmit()
+// ===== API FUNCTIONS =====
+const fetchProducts = async () => {
+  try {
+    productsLoading.value = true
+    const res = await getListOfProducts()
+    let productData = []
+    if (res && res.data) {
+      if (Array.isArray(res.data)) {
+        productData = res.data
+      } else if (res.data.data && Array.isArray(res.data.data)) {
+        productData = res.data.data
+      } else if (res.data.products && Array.isArray(res.data.products)) {
+        productData = res.data.products
+      }
     }
-  } else if (event.key === 'Escape') {
-    event.preventDefault()
-    goBack()
+    products.value = productData.filter(product =>
+        product && typeof product === 'object' && product.id && product.name
+    )
+  } catch (err) {
+    console.error('Lỗi khi lấy danh sách sản phẩm:', err)
+    products.value = []
+    showNotification('Không thể tải danh sách sản phẩm', 'error')
+  } finally {
+    productsLoading.value = false
   }
 }
-onMounted(async () => {
-  document.addEventListener('keydown', handleKeydown)
-  await fetchProducts()
-  if (isEditMode.value || isViewMode.value) {
-    await fetchPromotion()
-  }
-})
-onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
-
-/** =================== Modal chọn sản phẩm =================== */
-const showProductModal = ref(false)
-const tempSelectedProducts = ref([])
-const productSearch = ref('')
-const categories = ref([])
-const selectedCategory = ref('')
-const productPage = ref(1)
-const productPageSize = 9
-const productTotal = ref(0)
-const productTotalPages = computed(() => Math.ceil(productTotal.value / productPageSize))
-
-const filteredProducts = computed(() => {
-  return products.value
-})
-
+// ===== MODAL FUNCTIONS =====
 const openProductModal = async () => {
   tempSelectedProducts.value = [...form.value.product_id]
   showProductModal.value = true
   await fetchCategories()
   await fetchProductsModal()
 }
+
 const closeProductModal = () => {
   showProductModal.value = false
 }
+
 const fetchCategories = async () => {
   try {
     const res = await getAllCategories()
@@ -518,18 +534,17 @@ const fetchCategories = async () => {
     categories.value = []
   }
 }
+
 const fetchProductsModal = async () => {
   try {
     productsLoading.value = true
     const params = {
       pageNo: productPage.value,
-      pageSize: productPageSize,
+      pageSize: PRODUCT_PAGE_SIZE,
       productName: productSearch.value,
       categoryId: selectedCategory.value || undefined
     }
-    console.log('params gọi API:', params)
     const res = await getListOfProducts(params)
-    console.log('Kết quả API:', res.data)
     let productData = []
     let total = 0
     if (res && res.data) {
@@ -553,29 +568,50 @@ const fetchProductsModal = async () => {
     productsLoading.value = false
   }
 }
-watch([productSearch, selectedCategory, productPage], fetchProductsModal)
+
 const handleSearchInput = () => {
   productPage.value = 1
   fetchProductsModal()
 }
+
 const handleCategoryChange = () => {
   productPage.value = 1
   fetchProductsModal()
 }
+
 const goToPage = (page) => {
   if (page >= 1 && page <= productTotalPages.value) {
     productPage.value = page
   }
 }
+
 const addSelectedProducts = () => {
   form.value.product_id = [...new Set(tempSelectedProducts.value)]
   showProductModal.value = false
 }
 
-// Xoá sản phẩm khỏi danh sách đã chọn
 const handleRemoveProduct = (productId) => {
   form.value.product_id = form.value.product_id.filter(id => id !== productId)
 }
+
+// ===== LIFECYCLE HOOKS =====
+onMounted(async () => {
+  document.addEventListener('keydown', handleKeydown)
+  await fetchProducts()
+  if (isEditMode.value || isViewMode.value) {
+    await fetchPromotion()
+  } else {
+    // Initialize form for create mode
+    initialForm.value = JSON.parse(JSON.stringify(form.value))
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
+})
+
+// ===== WATCHERS =====
+watch([productSearch, selectedCategory, productPage], fetchProductsModal)
 
 /**
  * Khi danh sách sản phẩm áp dụng thay đổi, gọi API lấy variants
@@ -661,16 +697,16 @@ const onVariantPriceChange = (variantId) => {
     }
     if (percent < 0) {
       error = 'Phần trăm giảm giá không được âm'
-    } else if (percent > 100) {
-      error = 'Phần trăm giảm giá không được vượt quá 100%'
+  } else if (percent > MAX_DISCOUNT_PERCENT) {
+      error = 'Phần trăm giảm giá không được vượt quá 90%'
     }
-    if (price === 0 && Math.round(percent) !== 100) {
-      error = 'Nếu giá sau KM = 0 thì phần trăm giảm phải là 100%'
+    if (price === 0 && Math.round(percent) !== 50) {
+      error = 'Nếu giá sau KM = 0 thì phần trăm giảm phải là 50%'
     }
     if (price === originalPrice && Math.round(percent) !== 0) {
       error = 'Nếu giá sau KM = giá gốc thì phần trăm giảm phải là 0%'
     }
-    variantPromotionData.value[variantId].discountPercent = Math.max(0, Math.min(100, Math.round(percent * 100) / 100))
+  variantPromotionData.value[variantId].discountPercent = Math.max(0, Math.min(MAX_DISCOUNT_PERCENT, Math.round(percent * 100) / 100))
   }
 
   // FIX: đánh dấu custom
@@ -691,12 +727,12 @@ const onVariantDiscountChange = (variantId) => {
     error = 'Phần trăm giảm giá không được để trống'
   } else if (discountPercent < 0) {
     error = 'Phần trăm giảm giá không được âm'
-  } else if (discountPercent > 100) {
-    error = 'Phần trăm giảm giá không được vượt quá 100%'
+  } else if (discountPercent > MAX_DISCOUNT_PERCENT) {
+    error = 'Phần trăm giảm giá không được vượt quá 90%'
   }
   let price = Math.round(originalPrice * (1 - (Number(discountPercent) || 0) / 100))
-  if (discountPercent === 100 && price !== 0) {
-    error = 'Nếu phần trăm giảm là 100% thì giá sau KM phải là 0'
+  if (discountPercent === 50 && price !== 0) {
+    error = 'Nếu phần trăm giảm là 50% thì giá sau KM phải là 0'
   }
   if (discountPercent === 0 && price !== originalPrice) {
     error = 'Nếu phần trăm giảm là 0% thì giá sau KM phải bằng giá gốc'
@@ -750,8 +786,16 @@ const buildProductPromotionRequests = () => {
               <div class="flex-grow-1">
                 <h1 class="fw-bold fs-3 mb-1 text-gradient">{{ headerTitle }}</h1>
                 <div class="text-secondary">{{ headerDesc }}</div>
-                <div v-if="discountPreview && form.value" class="badge bg-success-subtle text-success mt-2">
-                  {{ discountPreview }}
+                <div class="d-flex align-items-center gap-2 mt-2">
+                  <div v-if="discountPreview && form.value" class="badge bg-success-subtle text-success">
+                    {{ discountPreview }}
+                  </div>
+                  <div v-if="hasUnsavedChanges && isEditable" class="badge bg-warning-subtle text-warning">
+                    <i class="fas fa-exclamation-triangle me-1"></i>Có thay đổi chưa lưu
+                  </div>
+                  <div v-if="loading" class="badge bg-info-subtle text-info">
+                    <span class="spinner-border spinner-border-sm me-1"></span>Đang tải...
+                  </div>
                 </div>
               </div>
             </div>
@@ -767,18 +811,36 @@ const buildProductPromotionRequests = () => {
               <div class="row g-4">
                 <!-- Name -->
                 <div class="col-md-6">
-                  <label class="form-label fw-semibold required">
+                  <label class="form-label fw-semibold required" for="promotion-name">
                     <i class="fas fa-tag me-2"></i>Tên khuyến mãi
                   </label>
-                  <input type="text" class="form-control" v-model="form.name" :readonly="isViewMode" :class="{
-                    'is-invalid': errors.name && (touched.name || submitAttempted),
-                    'is-valid': !errors.name && (touched.name || submitAttempted) && form.name
-                  }" placeholder="Nhập tên khuyến mãi" @blur="handleBlur('name')" @input="handleInput('name')"
-                         maxlength="100"/>
-                  <div v-if="errors.name && (touched.name || submitAttempted)" class="invalid-feedback">
+                  <input 
+                    id="promotion-name"
+                    type="text" 
+                    class="form-control" 
+                    v-model="form.name" 
+                    :readonly="isViewMode"
+                    :disabled="loading"
+                    :class="{
+                      'is-invalid': errors.name && (touched.name || submitAttempted),
+                      'is-valid': !errors.name && (touched.name || submitAttempted) && form.name
+                    }" 
+                    placeholder="Nhập tên khuyến mãi" 
+                    @blur="handleBlur('name')" 
+                    @input="handleInput('name')"
+                    maxlength="100"
+                    aria-describedby="name-help name-error"
+                    autocomplete="off"
+                  />
+                  <div v-if="errors.name && (touched.name || submitAttempted)" id="name-error" class="invalid-feedback">
                     {{ errors.name }}
                   </div>
-                  <div class="form-text">{{ form.name.length }}/100 ký tự</div>
+                  <div id="name-help" class="form-text">
+                    {{ form.name.length }}/{{ MAX_NAME_LENGTH }} ký tự
+                    <span v-if="form.name.length > MAX_NAME_LENGTH * 0.8" class="text-warning">
+                      (Gần đạt giới hạn)
+                    </span>
+                  </div>
                 </div>
 
                 <!-- Code - Only show in edit/view mode -->
@@ -805,7 +867,7 @@ const buildProductPromotionRequests = () => {
                     <i class="fas fa-percent me-2"></i>Giá trị giảm giá (%)
                   </label>
                   <div class="input-group">
-                    <input type="number" class="form-control" v-model.number="form.value" min="0" max="100" step="0.01"
+                    <input type="number" class="form-control" v-model.number="form.value" min="0" :max="MAX_DISCOUNT_PERCENT" step="0.01"
                            :readonly="isViewMode" :class="{
                         'is-invalid': errors.value && (touched.value || submitAttempted),
                         'is-valid': !errors.value && (touched.value || submitAttempted) && form.value !== null && form.value !== ''
@@ -815,7 +877,7 @@ const buildProductPromotionRequests = () => {
                   <div v-if="errors.value && (touched.value || submitAttempted)" class="invalid-feedback">
                     {{ errors.value }}
                   </div>
-                  <div class="form-text">Giá trị từ 0% đến 100%</div>
+                  <div class="form-text">Giá trị từ 0% đến 90%</div>
                 </div>
 
                 <!-- Start datetime -->
@@ -957,7 +1019,7 @@ const buildProductPromotionRequests = () => {
                                 <div v-else class="input-group input-group-sm">
                                   <input type="number"
                                          v-model.number="variantPromotionData[variant.id].discountPercent"
-                                         class="form-control" min="0" max="100" step="0.01" placeholder="%"
+                                         class="form-control" min="0" :max="MAX_DISCOUNT_PERCENT" step="0.01" placeholder="%"
                                          :readonly="isViewMode" @input="onVariantDiscountChange(variant.id)"/>
                                   <span class="input-group-text">%</span>
                                   <div v-if="variantErrors[variant.id]?.discountPercent"
@@ -978,26 +1040,45 @@ const buildProductPromotionRequests = () => {
 
               <!-- Actions -->
               <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mt-4 pt-3 border-top">
-                <button type="button" class="btn btn-outline-secondary d-flex align-items-center" @click="goBack"
-                        :disabled="loading">
+                <button 
+                  type="button" 
+                  class="btn btn-outline-secondary d-flex align-items-center" 
+                  @click="goBack"
+                  :disabled="isSubmitting"
+                >
                   <i class="fas fa-arrow-left me-2"></i>Quay lại
                 </button>
                 <div class="d-flex gap-2">
-                  <button v-if="!isViewMode" type="submit"
-                          :class="['btn d-flex align-items-center', isCreateMode ? 'btn-success' : 'btn-primary']"
-                          :disabled="loading || (!isFormValid && submitAttempted)">
-                    <span v-if="loading" class="spinner-border spinner-border-sm me-2"></span>
+                  <button 
+                    v-if="!isViewMode" 
+                    type="submit"
+                    :class="['btn d-flex align-items-center', isCreateMode ? 'btn-success' : 'btn-primary']"
+                    :disabled="!canSubmit"
+                  >
+                    <span v-if="isSubmitting" class="spinner-border spinner-border-sm me-2"></span>
                     <i v-else-if="isCreateMode" class="fas fa-plus me-2"></i>
                     <i v-else class="fas fa-save me-2"></i>
-                    {{ isCreateMode ? 'Tạo khuyến mãi' : 'Cập nhật' }}
+                    {{ isSubmitting ? 'Đang xử lý...' : (isCreateMode ? 'Tạo khuyến mãi' : 'Cập nhật') }}
                   </button>
                 </div>
               </div>
+
+              <!-- Help Text -->
               <div v-if="!isViewMode" class="mt-3 pt-2 border-top">
-                <small class="text-muted">
-                  <i class="fas fa-keyboard me-1"></i>
-                  Phím tắt: <kbd>Ctrl+S</kbd> để lưu, <kbd>Esc</kbd> để quay lại
-                </small>
+                <div class="row">
+                  <div class="col-md-6">
+                    <small class="text-muted">
+                      <i class="fas fa-keyboard me-1"></i>
+                      Phím tắt: <kbd>Ctrl+S</kbd> để lưu, <kbd>Esc</kbd> để quay lại
+                    </small>
+                  </div>
+                  <div class="col-md-6 text-end">
+                    <small class="text-muted">
+                      <i class="fas fa-info-circle me-1"></i>
+                      Form sẽ tự động validate khi bạn nhập
+                    </small>
+                  </div>
+                </div>
               </div>
             </form>
           </div>

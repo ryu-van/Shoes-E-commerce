@@ -5,6 +5,7 @@ import com.example.shoozy_shop.dto.request.ReturnItemRequest;
 import com.example.shoozy_shop.dto.response.OrderSummaryDto;
 import com.example.shoozy_shop.dto.response.ReturnItemResponse;
 import com.example.shoozy_shop.dto.response.ReturnRequestResponse;
+import com.example.shoozy_shop.enums.RefundMethod;
 import com.example.shoozy_shop.enums.RefundStatus;
 import com.example.shoozy_shop.enums.ReturnStatus;
 import com.example.shoozy_shop.exception.CustomException;
@@ -22,11 +23,12 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -46,7 +48,10 @@ public class ReturnServiceImpl implements ReturnService {
     private final ReturnItemImageRepository returnItemImageRepository;
     @Autowired
     private ProductVariantRepository productVariantRepository;
-
+    @Autowired
+    private RefundTransactionRepository refundTransactionRepository;
+    @Autowired
+    private RefundInfoRepository refundInfoRepository;
     @Autowired
     private final MinioService minioService;
 
@@ -107,6 +112,51 @@ public class ReturnServiceImpl implements ReturnService {
         return convertToDto(request);
     }
 
+    private BigDecimal safeBD(Double d) {
+        return d == null ? BigDecimal.ZERO : BigDecimal.valueOf(d);
+    }
+
+    /** Đơn giá sau KM theo sản phẩm (CHƯA phân bổ coupon cấp đơn) */
+    private BigDecimal unitAfterLinePromotion(OrderDetail od) {
+        int qty = od.getQuantity() == null ? 0 : od.getQuantity();
+        BigDecimal lineAfterPromo = od.getFinalPrice() == null ? BigDecimal.ZERO : od.getFinalPrice(); // TỔNG dòng
+        if (qty <= 0)
+            return BigDecimal.ZERO;
+        return lineAfterPromo.divide(BigDecimal.valueOf(qty), 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Đơn giá CUỐI để hoàn tiền:
+     * = (lineAfterPromo - allocatedCouponForLine) / qty
+     * - lineAfterPromo = od.finalPrice (TỔNG dòng sau KM theo sản phẩm)
+     * - Phân bổ coupon cấp đơn theo tỷ trọng lineAfterPromo / sumAllLinesAfterPromo
+     */
+    private BigDecimal unitFinalForRefund(Order order, OrderDetail od) {
+        int qty = od.getQuantity() == null ? 0 : od.getQuantity();
+        if (qty <= 0)
+            return BigDecimal.ZERO;
+
+        BigDecimal lineAfterPromo = od.getFinalPrice() == null ? BigDecimal.ZERO : od.getFinalPrice();
+        BigDecimal coupon = order.getCouponDiscountAmount() == null ? BigDecimal.ZERO : order.getCouponDiscountAmount();
+
+        BigDecimal sumLinesAfterPromo = order.getOrderDetails().stream()
+                .map(d -> d.getFinalPrice() == null ? BigDecimal.ZERO : d.getFinalPrice())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal allocated = BigDecimal.ZERO;
+        if (coupon.signum() > 0 && sumLinesAfterPromo.signum() > 0) {
+            allocated = coupon.multiply(lineAfterPromo)
+                    .divide(sumLinesAfterPromo, 2, RoundingMode.HALF_UP);
+        }
+
+        BigDecimal netLine = lineAfterPromo.subtract(allocated);
+        return netLine.divide(BigDecimal.valueOf(qty), 2, RoundingMode.HALF_UP);
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
     @Override
     public ReturnRequest createReturnRequest(CreateReturnRequestRequest request, Long userId) {
         User user = userRepository.findById(userId)
@@ -118,59 +168,117 @@ public class ReturnServiceImpl implements ReturnService {
         if (!order.getUser().getId().equals(userId)) {
             throw new ForbiddenException("Đơn hàng không thuộc về bạn");
         }
-
         if (!"COMPLETED".equalsIgnoreCase(order.getStatus())) {
             throw new RuntimeException("Chỉ có thể trả hàng nếu đơn hàng đã hoàn thành");
         }
-
-        LocalDateTime completedAt = order.getUpdatedAt();
+        LocalDateTime completedAt = order.getUpdatedAt(); // lý tưởng là dùng deliveredAt nếu có
         if (completedAt == null || completedAt.plusDays(7).isBefore(LocalDateTime.now())) {
             throw new RuntimeException("Đơn hàng đã quá thời gian cho phép trả hàng (7 ngày)");
         }
 
-        ReturnRequest returnRequest = new ReturnRequest();
-        returnRequest.setUser(user);
-        returnRequest.setOrder(order);
-        returnRequest.setReason(request.getReason());
-        returnRequest.setNote(request.getNote());
-        returnRequest.setStatus(ReturnStatus.PENDING);
-        returnRequest.setCreatedAt(LocalDateTime.now());
-        returnRequest.setUpdatedAt(LocalDateTime.now());
-        returnRequest = returnRequestRepository.save(returnRequest);
-
-        List<ReturnItem> createdItems = new ArrayList<>();
-
-        for (ReturnItemRequest itemRequest : request.getItems()) {
-            OrderDetail orderDetail = orderDetailRepository.findById(itemRequest.getOrderDetailId())
-                    .orElseThrow(() -> new RuntimeException("Chi tiết đơn hàng không tồn tại"));
-
-            ReturnItem returnItem = new ReturnItem();
-            returnItem.setReturnRequest(returnRequest);
-            returnItem.setOrderDetail(orderDetail);
-            returnItem.setQuantity(itemRequest.getQuantity());
-            returnItem.setReturnStatus("WAITING");
-            returnItem.setNote(itemRequest.getNote());
-            returnItem = returnItemRepository.save(returnItem);
-
-            // 🖼️ Lưu ảnh từ danh sách URL đã được upload trước
-            if (itemRequest.getImageUrls() != null) {
-                for (String imageUrl : itemRequest.getImageUrls()) {
-                    ReturnItemImage image = new ReturnItemImage();
-                    image.setReturnItem(returnItem);
-                    image.setImageUrl(imageUrl);
-                    image.setCreatedAt(LocalDateTime.now());
-                    returnItemImageRepository.save(image);
-                }
-
-                // Load lại danh sách ảnh
-                returnItem.setImages(returnItemImageRepository.findByReturnItemId(returnItem.getId()));
-            }
-
-            createdItems.add(returnItem);
+        // chặn trùng orderDetail trong 1 request
+        var ids = request.getItems().stream().map(ReturnItemRequest::getOrderDetailId).toList();
+        if (ids.size() != ids.stream().distinct().count()) {
+            throw new CustomException("Danh sách sản phẩm trả có mục trùng lặp", HttpStatus.BAD_REQUEST.value());
         }
 
-        returnRequest.setReturnItems(createdItems);
-        return returnRequest;
+        ReturnRequest rr = new ReturnRequest();
+        rr.setUser(user);
+        rr.setOrder(order);
+        rr.setReason(request.getReason());
+        rr.setNote(request.getNote());
+        rr.setStatus(ReturnStatus.PENDING);
+        rr.setCreatedAt(LocalDateTime.now());
+        rr.setUpdatedAt(LocalDateTime.now());
+        rr = returnRequestRepository.save(rr);
+        var infoReq = request.getRefundInfo();
+        if (infoReq != null && infoReq.getMethod() != null) {
+            // validate theo method
+            switch (infoReq.getMethod()) {
+                case BANK_TRANSFER -> {
+                    if (isBlank(infoReq.getBankName()) || isBlank(infoReq.getAccountNumber())
+                            || isBlank(infoReq.getAccountHolder())) {
+                        throw new CustomException("Thiếu thông tin ngân hàng để hoàn tiền", 400);
+                    }
+                }
+                case EWALLET -> {
+                    if (isBlank(infoReq.getWalletProvider()) || isBlank(infoReq.getWalletAccount())) {
+                        throw new CustomException("Thiếu thông tin ví điện tử để hoàn tiền", 400);
+                    }
+                }
+                case CASH -> {
+                    /* không cần gì thêm */ }
+            }
+
+            RefundInfo info = new RefundInfo();
+            info.setReturnRequest(rr);
+            info.setMethod(infoReq.getMethod());
+            info.setBankName(infoReq.getBankName());
+            info.setAccountNumber(infoReq.getAccountNumber());
+            info.setAccountHolder(infoReq.getAccountHolder());
+            info.setWalletProvider(infoReq.getWalletProvider());
+            info.setWalletAccount(infoReq.getWalletAccount());
+            refundInfoRepository.save(info);
+        }
+
+        List<ReturnItem> createdItems = new ArrayList<>();
+        BigDecimal totalRefund = BigDecimal.ZERO;
+
+        for (ReturnItemRequest itemReq : request.getItems()) {
+            OrderDetail od = orderDetailRepository.findById(itemReq.getOrderDetailId())
+                    .orElseThrow(() -> new RuntimeException("Chi tiết đơn hàng không tồn tại"));
+
+            // bảo đảm chi tiết thuộc đơn này
+            if (!od.getOrder().getId().equals(order.getId())) {
+                throw new CustomException("Sản phẩm không thuộc đơn hàng này", HttpStatus.BAD_REQUEST.value());
+            }
+
+            int qty = itemReq.getQuantity();
+            if (qty <= 0)
+                throw new CustomException("Số lượng phải > 0", HttpStatus.BAD_REQUEST.value());
+
+            // tính số lượng còn có thể trả = đã mua - đã yêu cầu trả (các request còn hiệu
+            // lực)
+            Integer alreadyRequested = returnItemRepository
+                    .sumRequestedQtyActiveByOrderDetailId(od.getId());
+            int purchased = od.getQuantity() == null ? 0 : od.getQuantity();
+            int remaining = purchased - (alreadyRequested == null ? 0 : alreadyRequested);
+            if (qty > remaining) {
+                throw new CustomException("Số lượng trả vượt quá số còn lại có thể trả",
+                        HttpStatus.BAD_REQUEST.value());
+            }
+
+            // đơn giá cuối để hoàn = đã trừ promotion + phân bổ coupon
+            BigDecimal unitFinal = unitFinalForRefund(order, od);
+            totalRefund = totalRefund.add(unitFinal.multiply(BigDecimal.valueOf(qty)));
+
+            // lưu ReturnItem
+            ReturnItem ri = new ReturnItem();
+            ri.setReturnRequest(rr);
+            ri.setOrderDetail(od);
+            ri.setQuantity(qty);
+            ri.setNote(itemReq.getNote());
+            ri = returnItemRepository.save(ri);
+
+            // lưu ảnh nếu có
+            if (itemReq.getImageUrls() != null && !itemReq.getImageUrls().isEmpty()) {
+                for (String url : itemReq.getImageUrls()) {
+                    ReturnItemImage img = new ReturnItemImage();
+                    img.setReturnItem(ri);
+                    img.setImageUrl(url);
+                    img.setCreatedAt(LocalDateTime.now());
+                    returnItemImageRepository.save(img);
+                }
+                ri.setImages(returnItemImageRepository.findByReturnItemId(ri.getId()));
+            }
+
+            createdItems.add(ri);
+        }
+
+        rr.setReturnItems(createdItems);
+        totalRefund = totalRefund.setScale(0, RoundingMode.HALF_UP);
+        rr.setRefundAmount(totalRefund); // ✅ chỉ tiền hàng, không cộng ship
+        return returnRequestRepository.save(rr);
     }
 
     @Override
@@ -183,6 +291,26 @@ public class ReturnServiceImpl implements ReturnService {
         response.setRefundAmount(returnRequest.getRefundAmount());
         response.setCreatedAt(returnRequest.getCreatedAt());
         response.setUpdatedAt(returnRequest.getUpdatedAt());
+        refundTransactionRepository.findByReturnRequestId(returnRequest.getId()).ifPresent(tx -> {
+            var txDto = new com.example.shoozy_shop.dto.response.RefundTransactionDto();
+            txDto.setAmount(tx.getAmount());
+            txDto.setMethod(tx.getMethod().name());
+            txDto.setReferenceCode(tx.getReferenceCode());
+            txDto.setNote(tx.getNote());
+            txDto.setCreatedBy(tx.getCreatedBy());
+            txDto.setCreatedAt(tx.getCreatedAt());
+            response.setRefundTransaction(txDto);
+        });
+        refundInfoRepository.findByReturnRequestId(returnRequest.getId()).ifPresent(info -> {
+            var dto = new com.example.shoozy_shop.dto.response.RefundInfoDto();
+            dto.setMethod(info.getMethod().name());
+            dto.setBankName(info.getBankName());
+            dto.setAccountNumber(info.getAccountNumber());
+            dto.setAccountHolder(info.getAccountHolder());
+            dto.setWalletProvider(info.getWalletProvider());
+            dto.setWalletAccount(info.getWalletAccount());
+            response.setRefundInfo(dto);
+        });
 
         // Convert đơn hàng
         Order order = returnRequest.getOrder();
@@ -215,46 +343,70 @@ public class ReturnServiceImpl implements ReturnService {
     @Override
     @Transactional
     public void updateStatus(Long returnRequestId, String statusStr) {
-        ReturnRequest request = returnRequestRepository.findById(returnRequestId)
+        ReturnStatus newStatus = ReturnStatus.valueOf(statusStr.toUpperCase());
+        updateStatus(returnRequestId, newStatus, null, null, null);
+    }
+
+    @Override
+    @Transactional
+    public void updateStatus(Long returnRequestId, ReturnStatus newStatus,
+            RefundMethod method, String referenceCode, String refundNote) {
+        ReturnRequest req = returnRequestRepository.findById(returnRequestId)
                 .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy yêu cầu trả hàng"));
 
-        // Parse status mới
-        ReturnStatus newStatus;
-        try {
-            newStatus = ReturnStatus.valueOf(statusStr.toUpperCase());
-        } catch (IllegalArgumentException ex) {
-            throw new CustomException("Trạng thái không hợp lệ", HttpStatus.BAD_REQUEST.value());
+        if (!req.getStatus().canTransitionTo(newStatus)) {
+            throw new CustomException("Chuyển trạng thái không hợp lệ", 400);
         }
 
-        // Check trạng thái hiện tại
-        ReturnStatus currentStatus = request.getStatus();
-        if (currentStatus == ReturnStatus.COMPLETED) {
-            throw new CustomException("Yêu cầu đã hoàn thành, không thể cập nhật", HttpStatus.BAD_REQUEST.value());
-        }
-
-        if (newStatus == ReturnStatus.REFUNDED) {
-            for (ReturnItem item : request.getReturnItems()) {
-                ProductVariant variant = item.getOrderDetail().getProductVariant();
-                if (variant == null) {
-                    throw new CustomException("Không tìm thấy biến thể sản phẩm",
-                            HttpStatus.NOT_FOUND.value());
+        switch (newStatus) {
+            case RETURNED -> {
+                for (ReturnItem item : req.getReturnItems()) {
+                    ProductVariant variant = item.getOrderDetail().getProductVariant();
+                    variant.setQuantity(variant.getQuantity() + item.getQuantity());
+                    productVariantRepository.save(variant);
                 }
-
-                // Cập nhật tồn kho
-                variant.setQuantity(variant.getQuantity() + item.getQuantity());
-                productVariantRepository.save(variant);
-
-                // Cập nhật trạng thái hoàn tiền trong OrderDetail
-                OrderDetail orderDetail = item.getOrderDetail();
-                orderDetail.setRefundStatus(RefundStatus.REFUNDED);
-                orderDetailRepository.save(orderDetail);
             }
+            case REFUNDED -> {
+                if (refundTransactionRepository.existsByReturnRequestId(req.getId())) {
+                    throw new CustomException("Yêu cầu này đã được hoàn tiền trước đó", 400);
+                }
+                if (method == null) {
+                    throw new CustomException("Thiếu phương thức hoàn tiền", 400);
+                }
+                if (method == RefundMethod.CASH && (referenceCode == null || referenceCode.isBlank())) {
+                    referenceCode = generateCashRefundCode();
+                }
+                RefundTransaction tx = new RefundTransaction();
+                tx.setReturnRequest(req);
+                tx.setAmount(req.getRefundAmount());
+                tx.setMethod(method);
+                tx.setReferenceCode(referenceCode);
+                tx.setNote(refundNote);
+                tx.setCreatedBy("admin");
+                // TODO: lấy từ SecurityContext
+                refundTransactionRepository.save(tx);
+
+                for (ReturnItem item : req.getReturnItems()) {
+                    OrderDetail od = item.getOrderDetail();
+                    od.setRefundStatus(RefundStatus.REFUNDED);
+                    orderDetailRepository.save(od);
+                }
+            }
+            case COMPLETED -> {
+                /* chỉ đóng yêu cầu */ }
+            default -> {
+                /* các trạng thái còn lại chỉ set status */ }
         }
 
-        // Cập nhật trạng thái yêu cầu trả hàng
-        request.setStatus(newStatus);
-        request.setUpdatedAt(LocalDateTime.now());
-        returnRequestRepository.save(request);
+        req.setStatus(newStatus);
+        req.setUpdatedAt(LocalDateTime.now());
+        returnRequestRepository.save(req);
+    }
+
+    private String generateCashRefundCode() {
+        String date = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
+        int rnd = new java.util.Random().nextInt(9000) + 1000;
+        return "CASH-" + date + "-" + rnd;
     }
 
 }

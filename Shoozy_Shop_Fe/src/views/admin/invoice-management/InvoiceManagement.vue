@@ -181,9 +181,9 @@
                   <i class="bi bi-eye"></i>Chi Tiết
                 </button>
 
-                <button class="btn btn-sm btn-success" @click="showEmailModal(invoice.orderId)" >
+                <!-- <button class="btn btn-sm btn-success" @click="showEmailModal(invoice.orderId)" >
                   <i class="bi bi-envelope"></i>Gửi Email
-                </button>
+                </button> -->
               </div>
             </td>
           </tr>

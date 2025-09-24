@@ -25,9 +25,9 @@ public class ProductAIResponse {
 
     // Constructor từ database row
     public ProductAIResponse(Long productId, String name, String thumbnail, String description, String brand,
-                      String category, String gender, String material,
-                      Long minPrice, Long maxPrice, Long totalQuantity,
-                      String availableSizes, String availableColors) {
+                             String category, String gender, String material,
+                             Long minPrice, Long maxPrice, Long totalQuantity,
+                             String availableSizes, String availableColors) {
         this.productId = productId;
         this.name = name;
         this.thumbnail = thumbnail;
